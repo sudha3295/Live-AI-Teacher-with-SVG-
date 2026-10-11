@@ -127,8 +127,6 @@ export default function App() {
           if (msg.type === 'session_status') {
             if (msg.status === 'connected') {
               setConnectionStatus('connected');
-              // Automatically activate mic for live conversation
-              startMicrophone(ws);
             } else if (msg.status === 'connecting') {
               setConnectionStatus('connecting');
               if (msg.effectiveConfig) {
@@ -308,10 +306,9 @@ export default function App() {
         }
       };
 
-      ws.onerror = (err) => {
-        console.error('WebSocket error:', err);
+      ws.onerror = () => {
         setConnectionStatus('error');
-        setLastApiError('WebSocket connection error.');
+        setLastApiError('WebSocket connection error. Please reconnect.');
       };
 
       ws.onclose = () => {
@@ -323,9 +320,14 @@ export default function App() {
   );
 
   const disconnectSession = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'stop_session' }));
-      wsRef.current.close();
+    if (wsRef.current) {
+      try {
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'stop_session' }));
+        }
+        wsRef.current.close();
+      } catch {}
+      wsRef.current = null;
     }
     stopMicrophone();
     audioPlayerRef.current?.stopAll();

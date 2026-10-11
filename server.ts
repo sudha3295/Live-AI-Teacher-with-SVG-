@@ -22,7 +22,42 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/live' });
+
+// Handle server-level client errors so unhandled socket drops don't crash
+server.on('clientError', (err: any, socket) => {
+  if (err.code === 'ECONNRESET' || !socket.writable) {
+    return;
+  }
+  socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+});
+
+// Explicit WebSocketServer without automatic server binding to safely manage upgrades
+const wss = new WebSocketServer({ noServer: true });
+
+wss.on('error', (err) => {
+  console.warn('WebSocketServer caught error:', err);
+});
+
+server.on('upgrade', (request, socket, head) => {
+  socket.on('error', (err) => {
+    console.warn('Socket upgrade error:', err?.message || err);
+  });
+
+  try {
+    const host = request.headers.host || 'localhost';
+    const url = new URL(request.url || '', `http://${host}`);
+    if (url.pathname === '/live') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+  } catch (err) {
+    console.warn('Failed to handle upgrade request:', err);
+    socket.destroy();
+  }
+});
 
 // Initialize Google GenAI for Gemini Live session
 const apiKey = process.env.GEMINI_API_KEY || '';
@@ -106,10 +141,24 @@ wss.on('connection', (clientWs: WebSocket) => {
   let currentTargetClass = 'Class 2';
 
   const sendToClient = (data: Record<string, unknown>) => {
-    if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.send(JSON.stringify(data));
+    try {
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify(data));
+      }
+    } catch (err) {
+      console.warn('Failed to send to client WebSocket:', err);
     }
   };
+
+  clientWs.on('error', (err) => {
+    console.warn('Client WebSocket error caught:', (err as any)?.message || err);
+    if (activeLiveSession) {
+      try {
+        activeLiveSession.close();
+      } catch {}
+      activeLiveSession = null;
+    }
+  });
 
   clientWs.on('message', async (messageBuffer) => {
     try {
