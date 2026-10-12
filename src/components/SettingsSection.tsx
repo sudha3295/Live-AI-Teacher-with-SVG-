@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Settings, Sliders, RefreshCw, Check, Undo } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Settings, Sliders, RefreshCw, Check, Undo, Zap } from 'lucide-react';
 import { SessionConfig } from '../types';
 
 export const DEFAULT_TEACHER_PROMPT =
@@ -27,6 +27,8 @@ export const CLASS_LEVELS = [
   'Class 5',
 ];
 
+export const TOKEN_WINDOW_PRESETS = [2048, 4096, 8192, 16384, 32768];
+
 interface SettingsSectionProps {
   currentConfig: SessionConfig;
   effectiveConfig: SessionConfig | null;
@@ -43,6 +45,10 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [formConfig, setFormConfig] = useState<SessionConfig>(currentConfig);
   const [justApplied, setJustApplied] = useState(false);
+
+  useEffect(() => {
+    setFormConfig(currentConfig);
+  }, [currentConfig]);
 
   const handleApply = (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,10 +75,10 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
           </div>
           <div>
             <h3 className="text-xs font-bold text-neutral-900 uppercase tracking-wide">
-              Live Session Settings & Voice Activity Detection (VAD)
+              Live Session Settings, VAD & Output Token Window
             </h3>
             <p className="text-[11px] text-neutral-500">
-              Configure system prompt, voices, prefix/silence padding, and child grade level
+              Configure system prompt, voices, prefix/silence padding, target grade, and output token window limit
             </p>
           </div>
         </div>
@@ -85,7 +91,7 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
       {/* Settings Form Body */}
       {isOpen && (
         <form onSubmit={handleApply} className="p-4 sm:p-5 border-t border-neutral-200 space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {/* 1. Live Model */}
             <div>
               <label htmlFor="model-select" className="block text-xs font-semibold text-neutral-800 mb-1">
@@ -124,10 +130,10 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
               </select>
             </div>
 
-            {/* 3. Class Level */}
+            {/* 3. Class Level (Target Grade) */}
             <div>
               <label htmlFor="class-select" className="block text-xs font-semibold text-neutral-800 mb-1">
-                Student Grade Level
+                Target Grade (Class 1–5)
               </label>
               <select
                 id="class-select"
@@ -142,6 +148,63 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
                 ))}
               </select>
             </div>
+
+            {/* 4. Output Token Window (maxOutputTokens) */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label htmlFor="token-window-select" className="block text-xs font-semibold text-neutral-800">
+                  Output Token Window
+                </label>
+                <span className="text-[10px] font-mono text-neutral-500">maxOutputTokens</span>
+              </div>
+              <select
+                id="token-window-select"
+                value={formConfig.maxOutputTokens}
+                onChange={(e) =>
+                  setFormConfig({ ...formConfig, maxOutputTokens: Number(e.target.value) })
+                }
+                className="w-full bg-neutral-50 border border-neutral-300 rounded px-2.5 py-1.5 text-xs text-neutral-900 focus:outline-hidden focus:ring-1 focus:ring-neutral-700"
+              >
+                <option value={2048}>2,048 tokens (Compact)</option>
+                <option value={4096}>4,096 tokens (Standard)</option>
+                <option value={8192}>8,192 tokens (Recommended for Rich SVGs)</option>
+                <option value={16384}>16,384 tokens (High Capacity)</option>
+                <option value={32768}>32,768 tokens (Maximum Window)</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Quick presets & description for Output Token Window */}
+          <div className="bg-neutral-50 border border-neutral-200 rounded p-3 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-bold text-neutral-800 flex items-center gap-1.5">
+                <Zap className="h-3.5 w-3.5 text-amber-600" />
+                LLM Output Token Window Budget:
+                <span className="font-mono text-indigo-700 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded text-xs">
+                  {formConfig.maxOutputTokens.toLocaleString()} tokens
+                </span>
+              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-neutral-500">Quick Select:</span>
+                {TOKEN_WINDOW_PRESETS.map((tokens) => (
+                  <button
+                    key={tokens}
+                    type="button"
+                    onClick={() => setFormConfig({ ...formConfig, maxOutputTokens: tokens })}
+                    className={`px-2 py-0.5 text-[11px] rounded font-mono transition-colors ${
+                      formConfig.maxOutputTokens === tokens
+                        ? 'bg-neutral-900 text-white font-bold'
+                        : 'bg-white border border-neutral-300 text-neutral-700 hover:bg-neutral-100'
+                    }`}
+                  >
+                    {tokens >= 1024 ? `${tokens / 1024}k` : tokens}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <p className="text-[11px] text-neutral-600">
+              Allocates the maximum generation token limit for SVG diagrams and teacher responses. Increase this token window whenever you need more complex, multi-element illustrations to prevent truncation.
+            </p>
           </div>
 
           {/* VAD Settings (Prefix padding & Silence padding) */}
@@ -240,13 +303,16 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
           {/* Effective Configuration Display & Apply button */}
           <div className="pt-2 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-3">
             {/* Effective Values sent to API */}
-            <div className="text-xs text-neutral-600 space-x-2">
+            <div className="text-xs text-neutral-600 flex flex-wrap items-center gap-1.5">
               <span className="font-semibold text-neutral-700">Effective API Config:</span>
               <span className="font-mono text-[11px] bg-neutral-100 px-2 py-0.5 rounded text-neutral-800">
-                model: {effectiveConfig?.model || formConfig.model}
+                grade: {effectiveConfig?.targetClass || formConfig.targetClass}
               </span>
               <span className="font-mono text-[11px] bg-neutral-100 px-2 py-0.5 rounded text-neutral-800">
-                voice: {effectiveConfig?.voice || formConfig.voice}
+                token window: {(effectiveConfig?.maxOutputTokens || formConfig.maxOutputTokens).toLocaleString()}
+              </span>
+              <span className="font-mono text-[11px] bg-neutral-100 px-2 py-0.5 rounded text-neutral-800">
+                model: {effectiveConfig?.model || formConfig.model}
               </span>
               <span className="font-mono text-[11px] bg-neutral-100 px-2 py-0.5 rounded text-neutral-800">
                 prefix: {effectiveConfig?.prefixPaddingMs ?? formConfig.prefixPaddingMs}ms

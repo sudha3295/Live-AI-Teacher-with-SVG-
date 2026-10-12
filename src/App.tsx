@@ -24,6 +24,7 @@ const INITIAL_CONFIG: SessionConfig = {
   systemPrompt: DEFAULT_TEACHER_PROMPT,
   prefixPaddingMs: 300,
   silenceDurationMs: 500,
+  maxOutputTokens: 8192,
 };
 
 const INITIAL_TOOL_STATE: ToolCallState = {
@@ -116,6 +117,7 @@ export default function App() {
             systemPrompt: configToUse.systemPrompt,
             prefixPaddingMs: configToUse.prefixPaddingMs,
             silenceDurationMs: configToUse.silenceDurationMs,
+            maxOutputTokens: configToUse.maxOutputTokens,
           })
         );
       };
@@ -454,6 +456,24 @@ export default function App() {
     }
   };
 
+  const handleGradeChange = (newGrade: string) => {
+    const updated = { ...sessionConfig, targetClass: newGrade };
+    setSessionConfig(updated);
+    setEffectiveConfig((prev) => (prev ? { ...prev, targetClass: newGrade } : updated));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'update_target_class',
+            targetClass: newGrade,
+          })
+        );
+      } catch (err) {
+        console.warn('Failed to update target class on socket:', err);
+      }
+    }
+  };
+
   return (
     <div className="min-h-screen bg-neutral-100 text-neutral-900 flex flex-col font-sans selection:bg-indigo-100 selection:text-indigo-900">
       {/* Header */}
@@ -472,10 +492,21 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 text-xs">
-            <span className="font-semibold text-neutral-700">Target Grade:</span>
-            <span className="px-2.5 py-1 rounded bg-indigo-50 border border-indigo-200 text-indigo-800 font-bold">
-              {sessionConfig.targetClass}
-            </span>
+            <label htmlFor="header-target-grade-select" className="font-semibold text-neutral-700">
+              Target Grade:
+            </label>
+            <select
+              id="header-target-grade-select"
+              value={sessionConfig.targetClass}
+              onChange={(e) => handleGradeChange(e.target.value)}
+              className="px-2.5 py-1 rounded bg-indigo-50 border border-indigo-300 text-indigo-900 font-bold text-xs focus:ring-1 focus:ring-indigo-600 focus:outline-hidden cursor-pointer hover:bg-indigo-100 transition-colors shadow-2xs"
+            >
+              <option value="Class 1">Class 1</option>
+              <option value="Class 2">Class 2</option>
+              <option value="Class 3">Class 3</option>
+              <option value="Class 4">Class 4</option>
+              <option value="Class 5">Class 5</option>
+            </select>
           </div>
         </div>
       </header>
@@ -490,28 +521,32 @@ export default function App() {
           onApplyConfig={handleApplyConfig}
         />
 
-        {/* Two-Panel Core Workspace */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 min-h-[560px]">
-          {/* Left Panel: Teacher Conversation */}
-          <ConversationPanel
-            messages={messages}
-            connectionStatus={connectionStatus}
-            isMicActive={isMicActive}
-            isMuted={isMuted}
-            onToggleConnect={handleToggleConnect}
-            onToggleMic={handleToggleMic}
-            onToggleMute={handleToggleMute}
-            onSendMessage={handleSendMessage}
-            onClearSession={handleClearSession}
-            activeModelName={sessionConfig.model}
-          />
+        {/* Two-Panel Core Workspace - Fixed height to ensure SVG visual panel remains constantly in view */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 lg:h-[620px]">
+          {/* Left Panel: Teacher Conversation (Fixed height with internal scroll to latest message) */}
+          <div className="h-[520px] lg:h-full min-h-0">
+            <ConversationPanel
+              messages={messages}
+              connectionStatus={connectionStatus}
+              isMicActive={isMicActive}
+              isMuted={isMuted}
+              onToggleConnect={handleToggleConnect}
+              onToggleMic={handleToggleMic}
+              onToggleMute={handleToggleMute}
+              onSendMessage={handleSendMessage}
+              onClearSession={handleClearSession}
+              activeModelName={sessionConfig.model}
+            />
+          </div>
 
-          {/* Right Panel: Visual Teaching Canvas */}
-          <VisualPanel
-            latestSvg={latestSvg}
-            toolCallState={toolCallState}
-            targetClass={sessionConfig.targetClass}
-          />
+          {/* Right Panel: Visual Teaching Canvas (Permanently positioned & constantly visible) */}
+          <div className="h-[520px] lg:h-full min-h-0">
+            <VisualPanel
+              latestSvg={latestSvg}
+              toolCallState={toolCallState}
+              targetClass={sessionConfig.targetClass}
+            />
+          </div>
         </div>
 
         {/* Bottom Diagnostics & Token Usage */}

@@ -56,4 +56,5 @@ export interface SessionConfig {
   systemPrompt: string;
   prefixPaddingMs: number;
   silenceDurationMs: number;
+  maxOutputTokens: number;
 }

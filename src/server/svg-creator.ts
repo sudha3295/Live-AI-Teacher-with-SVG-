@@ -120,7 +120,7 @@ export interface SvgExecutionResult {
 
 export async function executeSvgCreator(
   ai: GoogleGenAI,
-  args: { topic: string; targetClass?: string; description: string }
+  args: { topic: string; targetClass?: string; description: string; maxOutputTokens?: number }
 ): Promise<SvgExecutionResult> {
   const startTime = Date.now();
   const targetClass = args.targetClass || 'Class 2';
@@ -142,6 +142,7 @@ export async function executeSvgCreator(
             thinkingConfig: {
               thinkingLevel: ThinkingLevel.LOW,
             },
+            maxOutputTokens: args.maxOutputTokens || 8192,
             temperature: 0.2,
           },
         });

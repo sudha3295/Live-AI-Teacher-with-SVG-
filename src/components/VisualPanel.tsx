@@ -88,7 +88,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({
   return (
     <div className="flex flex-col h-full bg-white border border-neutral-300 rounded-lg shadow-xs overflow-hidden">
       {/* Header */}
-      <div className="p-3.5 sm:p-4 border-b border-neutral-200 bg-neutral-50/80">
+      <div className="shrink-0 p-3.5 sm:p-4 border-b border-neutral-200 bg-neutral-50/80">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="flex items-center gap-2">
@@ -156,7 +156,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({
 
       {/* Main Canvas Area */}
       <div
-        className={`flex-1 relative bg-white overflow-hidden flex items-center justify-center p-4 border-b border-neutral-200 min-h-[360px] ${
+        className={`flex-1 min-h-0 relative bg-white overflow-hidden flex items-center justify-center p-4 border-b border-neutral-200 ${
           isZoomed ? 'p-2' : 'p-6'
         }`}
       >
@@ -206,7 +206,7 @@ export const VisualPanel: React.FC<VisualPanelProps> = ({
       </div>
 
       {/* Accordions for Inspection & Observability */}
-      <div className="divide-y divide-neutral-200 bg-neutral-50/50">
+      <div className="shrink-0 divide-y divide-neutral-200 bg-neutral-50/50">
         {/* Accordion 1: Tool Call Arguments & Debugging */}
         <div>
           <button

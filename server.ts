@@ -89,7 +89,7 @@ const svgAi = new GoogleGenAI({
 // REST endpoint for direct SVG generation testing (compatible with SVG Teaching Visual Tester)
 app.post('/api/generate-svg', async (req, res) => {
   try {
-    const { model, systemPrompt, prompt } = req.body;
+    const { model, systemPrompt, prompt, maxOutputTokens } = req.body;
     if (!prompt) {
       return res.status(400).json({ error: 'Missing prompt in request body.' });
     }
@@ -103,6 +103,7 @@ app.post('/api/generate-svg', async (req, res) => {
         thinkingConfig: {
           thinkingLevel: ThinkingLevel.LOW,
         },
+        maxOutputTokens: typeof maxOutputTokens === 'number' ? maxOutputTokens : 8192,
         temperature: 0.2,
       },
     });
@@ -139,6 +140,7 @@ wss.on('connection', (clientWs: WebSocket) => {
   let activeLiveSession: any = null;
   let isClosing = false;
   let currentTargetClass = 'Class 2';
+  let currentMaxOutputTokens = 8192;
 
   const sendToClient = (data: Record<string, unknown>) => {
     try {
@@ -187,6 +189,7 @@ wss.on('connection', (clientWs: WebSocket) => {
         const prefixPaddingMs = typeof msg.prefixPaddingMs === 'number' ? msg.prefixPaddingMs : 300;
         const silenceDurationMs = typeof msg.silenceDurationMs === 'number' ? msg.silenceDurationMs : 500;
         currentTargetClass = msg.targetClass || 'Class 2';
+        currentMaxOutputTokens = typeof msg.maxOutputTokens === 'number' ? msg.maxOutputTokens : 8192;
 
         sendToClient({
           type: 'session_status',
@@ -197,6 +200,7 @@ wss.on('connection', (clientWs: WebSocket) => {
             targetClass: currentTargetClass,
             prefixPaddingMs,
             silenceDurationMs,
+            maxOutputTokens: currentMaxOutputTokens,
             systemPromptLength: systemPrompt.length,
           },
         });
@@ -218,6 +222,7 @@ wss.on('connection', (clientWs: WebSocket) => {
                   silenceDurationMs,
                 },
               },
+              maxOutputTokens: currentMaxOutputTokens,
               outputAudioTranscription: {},
               inputAudioTranscription: {},
               tools: [
@@ -301,11 +306,12 @@ wss.on('connection', (clientWs: WebSocket) => {
                           timestamp: Date.now(),
                         });
 
-                        // Execute the real SVG Creator with dedicated paid key
+                        // Execute the real SVG Creator with dedicated paid key and configured output token window
                         const result = await executeSvgCreator(svgAi, {
                           topic,
                           targetClass,
                           description,
+                          maxOutputTokens: currentMaxOutputTokens,
                         });
 
                         // Inform client of result
@@ -439,6 +445,14 @@ wss.on('connection', (clientWs: WebSocket) => {
             ],
             turnComplete: true,
           });
+        }
+      } else if (msg.type === 'update_target_class') {
+        if (msg.targetClass) {
+          currentTargetClass = msg.targetClass;
+        }
+      } else if (msg.type === 'update_max_output_tokens') {
+        if (typeof msg.maxOutputTokens === 'number') {
+          currentMaxOutputTokens = msg.maxOutputTokens;
         }
       } else if (msg.type === 'stop_session') {
         isClosing = true;

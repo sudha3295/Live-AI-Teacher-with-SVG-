@@ -41,10 +41,14 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   activeModelName,
 }) => {
   const [inputText, setInputText] = useState('');
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (scrollContainerRef.current) {
+      // Direct scrollTop on the inner scroll container ensures newest message is always visible
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+    }
   }, [messages]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -90,7 +94,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   return (
     <div className="flex flex-col h-full bg-white border border-neutral-300 rounded-lg shadow-xs overflow-hidden">
       {/* Panel Header & Controls */}
-      <div className="p-3.5 sm:p-4 border-b border-neutral-200 bg-neutral-50/80">
+      <div className="shrink-0 p-3.5 sm:p-4 border-b border-neutral-200 bg-neutral-50/80">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div className="flex items-center gap-2">
             <div className="p-1.5 bg-indigo-600 text-white rounded-md">
@@ -193,7 +197,10 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       </div>
 
       {/* Transcript Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-neutral-50/40">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 bg-neutral-50/40 overscroll-contain"
+      >
         {messages.length === 0 ? (
           <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center p-6 text-neutral-500">
             <div className="p-3 bg-indigo-50 text-indigo-600 rounded-full mb-3">
@@ -313,7 +320,7 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       {/* Text Input Footer */}
       <form
         onSubmit={handleSubmit}
-        className="p-3 border-t border-neutral-200 bg-white flex items-center gap-2"
+        className="shrink-0 p-3 border-t border-neutral-200 bg-white flex items-center gap-2"
       >
         <input
           type="text"
