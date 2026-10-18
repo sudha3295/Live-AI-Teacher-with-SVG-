@@ -22,14 +22,24 @@ import {
   GraduationCap,
   MessageSquare,
   FileText,
+  Shield,
+  Lock,
 } from 'lucide-react';
 import { LearningSession, TimelineMilestone, SessionVisual } from '../types';
+import {
+  getUserSessionsFromFirestore,
+  deleteSessionFromFirestore,
+} from '../utils/firebase';
 
 interface ParentLearningPortalProps {
   isOpen: boolean;
   onClose: () => void;
   onResumeSession: (session: LearningSession) => void;
   targetClass: string;
+  userId?: string;
+  userEmail?: string;
+  userName?: string;
+  onSessionDeleted?: () => void;
 }
 
 export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
@@ -37,12 +47,21 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
   onClose,
   onResumeSession,
   targetClass,
+  userId,
+  userEmail,
+  userName,
+  onSessionDeleted,
 }) => {
   const [sessions, setSessions] = useState<LearningSession[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [selectedSession, setSelectedSession] = useState<LearningSession | null>(null);
   const [activeTab, setActiveTab] = useState<'timeline' | 'visuals' | 'memory'>('timeline');
-  const [viewingSvg, setViewingSvg] = useState<{ topic: string; svgMarkup: string } | null>(null);
+  const [viewingSvg, setViewingSvg] = useState<{
+    topic: string;
+    svgMarkup?: string;
+    imageUrl?: string;
+    type?: 'svg' | 'image';
+  } | null>(null);
   const [viewingTranscriptSession, setViewingTranscriptSession] =
     useState<LearningSession | null>(null);
   const [expandedSessionIds, setExpandedSessionIds] = useState<Record<string, boolean>>({});
@@ -51,13 +70,47 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
   const fetchSessions = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/sessions');
+      let combined: LearningSession[] = [];
+      
+      // If signed in, query user-isolated Firestore subcollection
+      if (userId) {
+        try {
+          const firestoreSessions = await getUserSessionsFromFirestore(userId);
+          combined.push(...firestoreSessions);
+        } catch (fErr) {
+          console.warn('Could not read from Firestore subcollection:', fErr);
+        }
+      }
+
+      // Also query server-side isolated sessions
+      const email = userEmail || 'guest';
+      const res = await fetch('/api/sessions', {
+        headers: {
+          'x-user-email': email,
+        },
+      });
       const data = await res.json();
       if (data.sessions && Array.isArray(data.sessions)) {
-        setSessions(data.sessions);
-        if (data.sessions.length > 0 && !selectedSession) {
-          setSelectedSession(data.sessions[0]);
+        // Merge without duplicates by ID
+        const seen = new Set(combined.map((s) => s.id));
+        for (const s of data.sessions) {
+          if (!seen.has(s.id)) {
+            combined.push(s);
+            seen.add(s.id);
+          }
         }
+      }
+
+      // Sort by startedAt desc
+      combined.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+
+      setSessions(combined);
+      if (combined.length > 0) {
+        setSelectedSession((prev) =>
+          prev ? combined.find((s: LearningSession) => s.id === prev.id) || combined[0] : combined[0]
+        );
+      } else {
+        setSelectedSession(null);
       }
     } catch (err) {
       console.error('Failed to load learning sessions:', err);
@@ -70,7 +123,7 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
     if (isOpen) {
       fetchSessions();
     }
-  }, [isOpen]);
+  }, [isOpen, userEmail, userId]);
 
   if (!isOpen) return null;
 
@@ -86,11 +139,25 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
     if (!window.confirm('Are you sure you want to remove this session from the timeline?')) return;
     setDeletingId(id);
     try {
-      await fetch(`/api/sessions/${id}`, { method: 'DELETE' });
+      if (userId) {
+        try {
+          await deleteSessionFromFirestore(userId, id);
+        } catch (fErr) {
+          console.warn('Failed to delete from Firestore:', fErr);
+        }
+      }
+      const email = userEmail || 'guest';
+      await fetch(`/api/sessions/${id}`, {
+        method: 'DELETE',
+        headers: {
+          'x-user-email': email,
+        },
+      });
       setSessions((prev) => prev.filter((s) => s.id !== id));
       if (selectedSession?.id === id) {
         setSelectedSession(null);
       }
+      onSessionDeleted?.();
     } catch (err) {
       console.error('Failed to delete session:', err);
     } finally {
@@ -98,7 +165,17 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
     }
   };
 
-  const handleDownloadSvg = (topic: string, svgMarkup: string) => {
+  const handleDownloadSvg = (topic: string, svgMarkup?: string, imageUrl?: string) => {
+    if (imageUrl) {
+      const a = document.createElement('a');
+      a.href = imageUrl;
+      a.download = `${topic.replace(/\s+/g, '-').toLowerCase()}.jpg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+    if (!svgMarkup) return;
     const blob = new Blob([svgMarkup], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -143,6 +220,16 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
                 <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-indigo-100 text-indigo-800">
                   {targetClass}
                 </span>
+                {userEmail && userEmail !== 'guest' ? (
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-300 flex items-center gap-1 shadow-2xs">
+                    <Shield className="h-3 w-3 text-emerald-600" />
+                    <span>Private Account: {userEmail}</span>
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-neutral-200 text-neutral-700">
+                    Guest Mode
+                  </span>
+                )}
               </div>
               <p className="text-xs text-neutral-500">
                 Track learning milestones, review generated educational diagrams, and see where Truncky continues
@@ -473,22 +560,47 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
                         {session.visuals && session.visuals.length > 0 && (
                           <div className="bg-white p-3.5 rounded-lg border border-neutral-200">
                             <span className="font-bold text-neutral-900 block mb-2">
-                              Visual Diagrams Generated ({session.visuals.length})
+                              Visuals Generated ({session.visuals.length})
                             </span>
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                               {session.visuals.map((v, vIdx) => (
                                 <div
                                   key={v.callId || vIdx}
                                   className="border border-neutral-200 rounded-lg p-2 bg-neutral-50/60 hover:bg-white transition-colors cursor-pointer group"
-                                  onClick={() => setViewingSvg({ topic: v.topic, svgMarkup: v.svgMarkup })}
+                                  onClick={() =>
+                                    setViewingSvg({
+                                      topic: v.topic,
+                                      svgMarkup: v.svgMarkup,
+                                      imageUrl: v.imageUrl,
+                                      type: v.type,
+                                    })
+                                  }
                                 >
-                                  <div
-                                    className="h-28 w-full bg-white rounded border border-neutral-200 flex items-center justify-center p-1.5 overflow-hidden [&>svg]:max-w-full [&>svg]:max-h-full"
-                                    dangerouslySetInnerHTML={{ __html: v.svgMarkup }}
-                                  />
-                                  <p className="mt-1.5 text-[11px] font-bold text-neutral-800 truncate">
-                                    {v.topic}
-                                  </p>
+                                  <div className="h-28 w-full bg-white rounded border border-neutral-200 flex items-center justify-center p-1.5 overflow-hidden">
+                                    {v.type === 'image' || v.imageUrl ? (
+                                      <img
+                                        src={v.imageUrl || ''}
+                                        alt={v.topic}
+                                        referrerPolicy="no-referrer"
+                                        className="max-h-full max-w-full object-contain rounded"
+                                      />
+                                    ) : (
+                                      <div
+                                        className="w-full h-full flex items-center justify-center [&>svg]:max-w-full [&>svg]:max-h-full"
+                                        dangerouslySetInnerHTML={{ __html: v.svgMarkup || '' }}
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="mt-1.5 flex items-center justify-between">
+                                    <p className="text-[11px] font-bold text-neutral-800 truncate">{v.topic}</p>
+                                    <span
+                                      className={`text-[9px] px-1 rounded font-semibold ${
+                                        v.type === 'image' ? 'bg-purple-100 text-purple-700' : 'bg-neutral-100 text-neutral-600'
+                                      }`}
+                                    >
+                                      {v.type === 'image' ? 'Image' : 'SVG'}
+                                    </span>
+                                  </div>
                                   <div className="flex items-center justify-between mt-1 text-[10px] text-indigo-600 font-medium">
                                     <span>Click to view</span>
                                     <Eye className="h-3 w-3" />
@@ -510,9 +622,9 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
               {allVisuals.length === 0 ? (
                 <div className="py-16 text-center text-neutral-500">
                   <Layers className="h-8 w-8 mx-auto text-neutral-300 mb-2" />
-                  <p className="text-sm font-semibold">No visual diagrams saved yet</p>
+                  <p className="text-sm font-semibold">No visual diagrams or illustrations saved yet</p>
                   <p className="text-xs text-neutral-400">
-                    When the AI teacher illustrates concepts with the SVG Creator tool, diagrams will appear here.
+                    When the AI teacher illustrates concepts with the SVG Creator or Nano Banana 2 tool, visuals will appear here.
                   </p>
                 </div>
               ) : (
@@ -524,20 +636,58 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
                     >
                       <div>
                         <div
-                          className="h-44 w-full bg-neutral-50 rounded-lg border border-neutral-200 flex items-center justify-center p-2 overflow-hidden cursor-pointer [&>svg]:max-w-full [&>svg]:max-h-full"
-                          onClick={() => setViewingSvg({ topic: visual.topic, svgMarkup: visual.svgMarkup })}
-                          dangerouslySetInnerHTML={{ __html: visual.svgMarkup }}
-                        />
-                        <h4 className="mt-2.5 text-xs font-bold text-neutral-900 truncate">
-                          {visual.topic}
-                        </h4>
-                        <p className="text-[10px] text-neutral-500 truncate">From: {sessionTitle}</p>
+                          className="h-44 w-full bg-neutral-50 rounded-lg border border-neutral-200 flex items-center justify-center p-2 overflow-hidden cursor-pointer"
+                          onClick={() =>
+                            setViewingSvg({
+                              topic: visual.topic,
+                              svgMarkup: visual.svgMarkup,
+                              imageUrl: visual.imageUrl,
+                              type: visual.type,
+                            })
+                          }
+                        >
+                          {visual.type === 'image' || visual.imageUrl ? (
+                            <img
+                              src={visual.imageUrl || ''}
+                              alt={visual.topic}
+                              referrerPolicy="no-referrer"
+                              className="max-h-full max-w-full object-contain rounded"
+                            />
+                          ) : (
+                            <div
+                              className="w-full h-full flex items-center justify-center [&>svg]:max-w-full [&>svg]:max-h-full"
+                              dangerouslySetInnerHTML={{ __html: visual.svgMarkup || '' }}
+                            />
+                          )}
+                        </div>
+                        <div className="mt-2.5 flex items-center justify-between">
+                          <h4 className="text-xs font-bold text-neutral-900 truncate">
+                            {visual.topic}
+                          </h4>
+                          <span
+                            className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${
+                              visual.type === 'image'
+                                ? 'bg-purple-100 text-purple-800'
+                                : 'bg-neutral-100 text-neutral-700'
+                            }`}
+                          >
+                            {visual.type === 'image' ? 'Nano Banana 2' : 'SVG'}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 truncate mt-0.5">From: {sessionTitle}</p>
                       </div>
 
                       <div className="mt-3 pt-2 border-t border-neutral-100 flex items-center justify-between text-xs">
                         <button
                           type="button"
-                          onClick={() => setViewingSvg({ topic: visual.topic, svgMarkup: visual.svgMarkup })}
+                          onClick={() =>
+                            setViewingSvg({
+                              topic: visual.topic,
+                              svgMarkup: visual.svgMarkup,
+                              imageUrl: visual.imageUrl,
+                              type: visual.type,
+                            })
+                          }
                           className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 font-medium text-[11px]"
                         >
                           <Eye className="h-3 w-3" />
@@ -546,9 +696,9 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => handleDownloadSvg(visual.topic, visual.svgMarkup)}
+                          onClick={() => handleDownloadSvg(visual.topic, visual.svgMarkup, visual.imageUrl)}
                           className="inline-flex items-center gap-1 text-neutral-600 hover:text-neutral-900 text-[11px]"
-                          title="Download SVG"
+                          title="Download Visual"
                         >
                           <Download className="h-3 w-3" />
                           <span>Download</span>
@@ -635,20 +785,31 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
         </div>
       </div>
 
-      {/* SVG Detail Modal */}
+      {/* Visual Detail Modal (SVG & Nano Banana 2 Image) */}
       {viewingSvg && (
         <div className="fixed inset-0 z-60 bg-neutral-950/70 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-4 space-y-3">
             <div className="flex items-center justify-between border-b border-neutral-200 pb-2">
-              <h3 className="text-sm font-bold text-neutral-900">{viewingSvg.topic}</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-neutral-900">{viewingSvg.topic}</h3>
+                <span
+                  className={`text-[10px] px-2 py-0.5 rounded font-semibold ${
+                    viewingSvg.type === 'image' || viewingSvg.imageUrl
+                      ? 'bg-purple-100 text-purple-800'
+                      : 'bg-neutral-100 text-neutral-700'
+                  }`}
+                >
+                  {viewingSvg.type === 'image' || viewingSvg.imageUrl ? 'Nano Banana 2 Image' : 'SVG Diagram'}
+                </span>
+              </div>
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => handleDownloadSvg(viewingSvg.topic, viewingSvg.svgMarkup)}
+                  onClick={() => handleDownloadSvg(viewingSvg.topic, viewingSvg.svgMarkup, viewingSvg.imageUrl)}
                   className="px-2.5 py-1 text-xs bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded inline-flex items-center gap-1"
                 >
                   <Download className="h-3 w-3" />
-                  <span>Download SVG</span>
+                  <span>Download</span>
                 </button>
                 <button
                   type="button"
@@ -659,10 +820,21 @@ export const ParentLearningPortal: React.FC<ParentLearningPortalProps> = ({
                 </button>
               </div>
             </div>
-            <div
-              className="h-80 w-full flex items-center justify-center p-4 bg-neutral-50 rounded border border-neutral-200 overflow-hidden [&>svg]:max-w-full [&>svg]:max-h-full"
-              dangerouslySetInnerHTML={{ __html: viewingSvg.svgMarkup }}
-            />
+            <div className="h-80 w-full flex items-center justify-center p-4 bg-neutral-50 rounded border border-neutral-200 overflow-hidden">
+              {viewingSvg.type === 'image' || viewingSvg.imageUrl ? (
+                <img
+                  src={viewingSvg.imageUrl || ''}
+                  alt={viewingSvg.topic}
+                  referrerPolicy="no-referrer"
+                  className="max-h-full max-w-full object-contain rounded shadow-xs"
+                />
+              ) : (
+                <div
+                  className="w-full h-full flex items-center justify-center [&>svg]:max-w-full [&>svg]:max-h-full"
+                  dangerouslySetInnerHTML={{ __html: viewingSvg.svgMarkup || '' }}
+                />
+              )}
+            </div>
           </div>
         </div>
       )}

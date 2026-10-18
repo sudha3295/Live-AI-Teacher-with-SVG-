@@ -7,9 +7,11 @@ export interface ChatMessage {
   toolDetails?: {
     callId: string;
     topic: string;
+    toolName?: 'svg_creator' | 'image_generator';
     targetClass?: string;
     description: string;
     status: 'running' | 'succeeded' | 'failed';
+    imageUrl?: string;
   };
 }
 
@@ -20,9 +22,12 @@ export interface ToolCallState {
   args: {
     topic: string;
     targetClass?: string;
-    description: string;
+    description?: string;
+    prompt?: string;
   };
+  visualType?: 'svg' | 'image';
   svgMarkup: string | null;
+  imageUrl?: string | null;
   rawText: string | null;
   error: string | null;
   durationMs: number | null;
@@ -53,10 +58,36 @@ export interface SessionConfig {
   model: string;
   voice: string;
   targetClass: string;
+  selectedLanguages: string[];
   systemPrompt: string;
   prefixPaddingMs: number;
   silenceDurationMs: number;
   maxOutputTokens: number;
+}
+
+export interface KidLanguageOption {
+  code: string;
+  name: string;
+  nativeName: string;
+  flag: string;
+  region: string;
+}
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl: string;
+  isFirstTimeUser: boolean;
+  onboardingCompleted: boolean;
+  preferences: {
+    languages: string[];
+    primaryLanguage: string;
+    targetClass: string;
+    childName?: string;
+  };
+  createdAt: number;
+  lastLoginAt: number;
 }
 
 export interface TimelineMilestone {
@@ -65,7 +96,9 @@ export interface TimelineMilestone {
   type: 'concept' | 'visual' | 'question' | 'milestone';
   title: string;
   description: string;
+  visualType?: 'svg' | 'image';
   svgMarkup?: string;
+  imageUrl?: string;
   childQuestion?: string;
   teacherHighlight?: string;
 }
@@ -75,7 +108,10 @@ export interface SessionVisual {
   topic: string;
   targetClass?: string;
   description?: string;
-  svgMarkup: string;
+  type: 'svg' | 'image';
+  svgMarkup?: string;
+  imageUrl?: string;
+  generator?: 'svg_creator' | 'image_generator';
   timestamp: number;
 }
 

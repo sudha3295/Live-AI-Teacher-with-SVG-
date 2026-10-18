@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with child learning preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "onboardingCompleted": { "type": "boolean" },
+        "preferences": {
+          "type": "object",
+          "properties": {
+            "languages": { "type": "array" },
+            "primaryLanguage": { "type": "string" },
+            "targetClass": { "type": "string" },
+            "childName": { "type": "string" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLoginAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "onboardingCompleted"]
+    },
+    "LearningSession": {
+      "title": "LearningSession",
+      "description": "A saved learning session and timeline for the child",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "startedAt": { "type": "number" },
+        "endedAt": { "type": "number" },
+        "durationSeconds": { "type": "number" },
+        "targetClass": { "type": "string" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "keyLearnings": { "type": "array" },
+        "skillsCovered": { "type": "array" },
+        "resumeContext": { "type": "string" },
+        "tokensUsed": { "type": "number" }
+      },
+      "required": ["id", "userId", "title", "targetClass"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document containing account settings and kid preferences"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": "LearningSession",
+      "description": "Isolated learning sessions for each parent account"
+    }
+  }
+}

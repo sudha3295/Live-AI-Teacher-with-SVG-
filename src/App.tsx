@@ -4,14 +4,34 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { BookOpen, Sparkles } from 'lucide-react';
+import {
+  BookOpen,
+  Sparkles,
+  LogIn,
+  Globe,
+  ChevronDown,
+  LogOut,
+  Edit3,
+  User,
+  Heart,
+} from 'lucide-react';
 import { ConversationPanel } from './components/ConversationPanel';
 import { VisualPanel } from './components/VisualPanel';
 import { SettingsSection } from './components/SettingsSection';
 import { DiagnosticsPanel } from './components/DiagnosticsPanel';
 import { ParentLearningPortal } from './components/ParentLearningPortal';
+import { LandingPage } from './components/LandingPage';
+import { KidOnboardingModal } from './components/KidOnboardingModal';
 import { AudioRecorder, AudioPlayer } from './utils/audio';
-import { DEFAULT_TEACHER_PROMPT } from './utils/prompts';
+import { DEFAULT_TEACHER_PROMPT, buildTeacherPrompt } from './utils/prompts';
+import {
+  auth,
+  onAuthStateChanged,
+  signOutUser,
+  loadUserProfile,
+  saveUserKidPreferences,
+  saveSessionToFirestore,
+} from './utils/firebase';
 import {
   ChatMessage,
   ToolCallState,
@@ -20,13 +40,18 @@ import {
   ModalityDetail,
   SessionVisual,
   LearningSession,
+  UserProfile,
 } from './types';
 
 const INITIAL_CONFIG: SessionConfig = {
   model: 'gemini-3.8-live',
   voice: 'Zephyr',
   targetClass: 'Class 2',
-  systemPrompt: DEFAULT_TEACHER_PROMPT,
+  selectedLanguages: ['English'],
+  systemPrompt: buildTeacherPrompt({
+    selectedLanguages: ['English'],
+    targetClass: 'Class 2',
+  }),
   prefixPaddingMs: 300,
   silenceDurationMs: 500,
   maxOutputTokens: 8192,
@@ -45,6 +70,34 @@ const INITIAL_TOOL_STATE: ToolCallState = {
   timestamp: Date.now(),
 };
 
+// Helper to merge incoming transcription tokens/chunks cleanly without truncating or repeating
+function mergeTranscriptChunk(currentAccumulated: string, incoming: string): string {
+  const cur = (currentAccumulated || '').trim();
+  const inc = (incoming || '').trim();
+  if (!cur) return incoming || '';
+  if (!inc) return currentAccumulated || '';
+
+  // If incoming already starts with current (full accumulated phrase sent)
+  if (incoming.startsWith(currentAccumulated)) {
+    return incoming;
+  }
+  // If current already starts with incoming (prefix or redundant snapshot)
+  if (currentAccumulated.startsWith(incoming)) {
+    return currentAccumulated;
+  }
+  // If incoming contains current as substring
+  if (incoming.includes(currentAccumulated)) {
+    return incoming;
+  }
+
+  // Token / word append with proper whitespace
+  const needsSpace =
+    !currentAccumulated.endsWith(' ') &&
+    !incoming.startsWith(' ') &&
+    !/^[,.!?;:'")\]\}]/.test(incoming);
+  return currentAccumulated + (needsSpace ? ' ' : '') + incoming;
+}
+
 export default function App() {
   const [sessionConfig, setSessionConfig] = useState<SessionConfig>(INITIAL_CONFIG);
   const [effectiveConfig, setEffectiveConfig] = useState<SessionConfig | null>(null);
@@ -57,6 +110,7 @@ export default function App() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [latestSvg, setLatestSvg] = useState<string | null>(null);
+  const [latestImage, setLatestImage] = useState<string | null>(null);
   const [toolCallState, setToolCallState] = useState<ToolCallState>(INITIAL_TOOL_STATE);
 
   const [usageMetrics, setUsageMetrics] = useState<UsageMetrics>({});
@@ -75,15 +129,86 @@ export default function App() {
     resumedTitle?: string;
   } | null>(null);
 
+  // User Profile & Authentication State
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+  const [isKidOnboardingOpen, setIsKidOnboardingOpen] = useState<boolean>(false);
+
   // References to audio and websocket instances
   const wsRef = useRef<WebSocket | null>(null);
   const audioRecorderRef = useRef<AudioRecorder | null>(null);
   const audioPlayerRef = useRef<AudioPlayer | null>(null);
   const isMutedRef = useRef<boolean>(false);
 
-  // Load existing session count and initial AI resume memory
+  // Firebase Real Auth Listener: automatically restores session & Firestore user profile
   useEffect(() => {
-    fetch('/api/sessions')
+    let isMounted = true;
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const profile = await loadUserProfile(firebaseUser.uid);
+          if (!isMounted) return;
+          if (profile) {
+            setCurrentUser(profile);
+            try {
+              localStorage.setItem('truncky_current_user', JSON.stringify(profile));
+            } catch {}
+            if (profile.preferences) {
+              const updatedPrompt = buildTeacherPrompt({
+                selectedLanguages: profile.preferences.languages,
+                targetClass: profile.preferences.targetClass,
+                childName: profile.preferences.childName,
+              });
+              setSessionConfig((prev) => ({
+                ...prev,
+                targetClass: profile.preferences.targetClass || prev.targetClass,
+                selectedLanguages: profile.preferences.languages || prev.selectedLanguages,
+                systemPrompt: updatedPrompt,
+              }));
+            }
+            const localOnboarded =
+              localStorage.getItem(`truncky_onboarded_${profile.id}`) === 'true';
+            const hasClassAndLang =
+              !!profile.preferences?.targetClass &&
+              profile.preferences.targetClass.trim() !== '' &&
+              Array.isArray(profile.preferences?.languages) &&
+              profile.preferences.languages.length > 0;
+            const isCompleted = !!profile.onboardingCompleted || localOnboarded || hasClassAndLang;
+
+            if (!isCompleted) {
+              setIsKidOnboardingOpen(true);
+            }
+          }
+        } catch (e) {
+          console.warn('Failed to load profile on auth state change:', e);
+        }
+      } else {
+        if (isMounted) {
+          setCurrentUser(null);
+          try {
+            localStorage.removeItem('truncky_current_user');
+          } catch {}
+        }
+      }
+      if (isMounted) {
+        setIsAuthChecking(false);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+    };
+  }, []);
+
+  // User-isolated session fetcher: loads ONLY the active user's private learning journey
+  const loadUserSessions = useCallback((userEmail?: string) => {
+    const email = userEmail || 'guest';
+    fetch('/api/sessions', {
+      headers: {
+        'x-user-email': email,
+      },
+    })
       .then((r) => r.json())
       .then((data) => {
         if (data.sessions && Array.isArray(data.sessions)) {
@@ -93,11 +218,21 @@ export default function App() {
               resumedTitle: data.sessions[0].title,
               resumeContext: data.sessions[0].resumeContext,
             });
+          } else {
+            setActiveResumeMemory(null);
           }
+        } else {
+          setSavedSessionCount(0);
+          setActiveResumeMemory(null);
         }
       })
-      .catch((err) => console.warn('Could not fetch sessions on load:', err));
+      .catch((err) => console.warn('Could not fetch sessions for user:', err));
   }, []);
+
+  // Automatically refresh sessions whenever the logged-in user changes (Sign in, Sign out, or initial mount)
+  useEffect(() => {
+    loadUserSessions(currentUser?.email);
+  }, [currentUser?.email, loadUserSessions]);
 
   // Ensure AudioPlayer is initialized on user interaction
   const getAudioPlayer = useCallback(() => {
@@ -161,6 +296,7 @@ export default function App() {
         ws.send(
           JSON.stringify({
             type: 'start_session',
+            userEmail: currentUser?.email || 'guest',
             model: configToUse.model,
             voice: configToUse.voice,
             targetClass: configToUse.targetClass,
@@ -171,6 +307,7 @@ export default function App() {
             resumeContext: resumeContext || undefined,
             resumedTitle: resumedTitle || undefined,
             useResumeMemory: overrideResumeContext !== 'NONE',
+            childName: currentUser?.preferences?.childName || undefined,
           })
         );
       };
@@ -185,6 +322,8 @@ export default function App() {
               if (!sessionStartTime) {
                 setSessionStartTime(Date.now());
               }
+              // By default, turn on microphone when live lesson connects
+              startMicrophone(ws);
             } else if (msg.status === 'connecting') {
               setConnectionStatus('connecting');
               if (msg.effectiveConfig) {
@@ -205,73 +344,165 @@ export default function App() {
             const player = getAudioPlayer();
             player.playChunk(msg.data);
           } else if (msg.type === 'transcript_teacher') {
+            const turnId = (msg.turnId as string) || '';
+            const incomingFullText = (msg.text as string) || '';
+            const incomingDelta = (msg.delta as string) || '';
+            const isFinished = !!msg.finished;
+
             setMessages((prev) => {
-              const lastMsg = prev[prev.length - 1];
-              if (lastMsg && lastMsg.role === 'teacher' && lastMsg.isPartial) {
-                return [
-                  ...prev.slice(0, -1),
-                  {
-                    ...lastMsg,
-                    text: msg.text,
-                    isPartial: !msg.finished,
+              // 1. If we have a turnId, update that specific teacher turn message
+              if (turnId) {
+                const existingIdx = prev.findIndex((m) => m.id === turnId);
+                if (existingIdx !== -1) {
+                  const existing = prev[existingIdx];
+                  const updatedText = incomingFullText || mergeTranscriptChunk(existing.text, incomingDelta);
+                  const updatedList = [...prev];
+                  updatedList[existingIdx] = {
+                    ...existing,
+                    text: updatedText,
+                    isPartial: !isFinished,
                     timestamp: Date.now(),
-                  },
-                ];
-              } else {
-                return [
-                  ...prev,
-                  {
-                    id: `teacher-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                    role: 'teacher',
-                    text: msg.text,
-                    timestamp: Date.now(),
-                    isPartial: !msg.finished,
-                  },
-                ];
+                  };
+                  return updatedList;
+                }
               }
+
+              // 2. Otherwise update the last teacher message if still partial
+              const lastIdx = prev.length - 1;
+              const lastMsg = prev[lastIdx];
+              if (lastMsg && lastMsg.role === 'teacher' && lastMsg.isPartial) {
+                const updatedText = incomingFullText || mergeTranscriptChunk(lastMsg.text, incomingDelta);
+                const updatedList = [...prev];
+                updatedList[lastIdx] = {
+                  ...lastMsg,
+                  id: turnId || lastMsg.id,
+                  text: updatedText,
+                  isPartial: !isFinished,
+                  timestamp: Date.now(),
+                };
+                return updatedList;
+              }
+
+              // 3. New teacher response turn
+              const newText = incomingFullText || incomingDelta;
+              if (!newText.trim()) return prev;
+
+              return [
+                ...prev,
+                {
+                  id: turnId || `teacher-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  role: 'teacher',
+                  text: newText,
+                  timestamp: Date.now(),
+                  isPartial: !isFinished,
+                },
+              ];
             });
           } else if (msg.type === 'transcript_student') {
+            const turnId = (msg.turnId as string) || '';
+            const incomingFullText = (msg.text as string) || '';
+            const incomingDelta = (msg.delta as string) || '';
+            const isFinished = !!msg.finished;
+
             setMessages((prev) => {
-              const lastMsg = prev[prev.length - 1];
-              if (lastMsg && lastMsg.role === 'student' && lastMsg.isPartial) {
-                return [
-                  ...prev.slice(0, -1),
-                  {
-                    ...lastMsg,
-                    text: msg.text,
-                    isPartial: !msg.finished,
+              // 1. If we have a turnId, update that specific student message
+              if (turnId) {
+                const existingIdx = prev.findIndex((m) => m.id === turnId);
+                if (existingIdx !== -1) {
+                  const existing = prev[existingIdx];
+                  const updatedText = incomingFullText || mergeTranscriptChunk(existing.text, incomingDelta);
+                  const updatedList = [...prev];
+                  updatedList[existingIdx] = {
+                    ...existing,
+                    text: updatedText,
+                    isPartial: !isFinished,
                     timestamp: Date.now(),
-                  },
-                ];
-              } else {
-                return [
-                  ...prev,
-                  {
-                    id: `student-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                    role: 'student',
-                    text: msg.text,
-                    timestamp: Date.now(),
-                    isPartial: !msg.finished,
-                  },
-                ];
+                  };
+                  return updatedList;
+                }
               }
+
+              // 2. Otherwise update the last student message if still partial
+              const lastIdx = prev.length - 1;
+              const lastMsg = prev[lastIdx];
+              if (lastMsg && lastMsg.role === 'student' && lastMsg.isPartial) {
+                const updatedText = incomingFullText || mergeTranscriptChunk(lastMsg.text, incomingDelta);
+                const updatedList = [...prev];
+                updatedList[lastIdx] = {
+                  ...lastMsg,
+                  id: turnId || lastMsg.id,
+                  text: updatedText,
+                  isPartial: !isFinished,
+                  timestamp: Date.now(),
+                };
+                return updatedList;
+              }
+
+              // 3. New student spoken message
+              const newText = incomingFullText || incomingDelta;
+              if (!newText.trim()) return prev;
+
+              return [
+                ...prev,
+                {
+                  id: turnId || `student-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                  role: 'student',
+                  text: newText,
+                  timestamp: Date.now(),
+                  isPartial: !isFinished,
+                },
+              ];
             });
           } else if (msg.type === 'turn_complete') {
-            // Finalize any partial message in transcript
+            const turnId = msg.turnId as string | undefined;
+            const finalText = msg.text as string | undefined;
+            // Finalize partial message in transcript while preserving full text
             setMessages((prev) =>
-              prev.map((m) => (m.isPartial ? { ...m, isPartial: false } : m))
+              prev.map((m) => {
+                if (turnId && m.id === turnId) {
+                  return {
+                    ...m,
+                    text: finalText || m.text,
+                    isPartial: false,
+                  };
+                }
+                if (m.isPartial) {
+                  return { ...m, isPartial: false };
+                }
+                return m;
+              })
             );
           } else if (msg.type === 'interrupted') {
-            // Teacher was interrupted by student: stop playback immediately
+            // Teacher was interrupted by student: stop playback immediately and finalize partial teacher message
             audioPlayerRef.current?.stopAll();
+            const turnId = msg.turnId as string | undefined;
+            const finalText = msg.text as string | undefined;
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (turnId && m.id === turnId) {
+                  return {
+                    ...m,
+                    text: finalText || m.text,
+                    isPartial: false,
+                  };
+                }
+                if (m.isPartial) {
+                  return { ...m, isPartial: false };
+                }
+                return m;
+              })
+            );
           } else if (msg.type === 'tool_call_start') {
             setToolCallCount((c) => c + 1);
+            const isImageTool = msg.name === 'image_generator';
             setToolCallState({
               status: 'running',
               name: msg.name,
               callId: msg.callId,
+              visualType: isImageTool ? 'image' : 'svg',
               args: msg.args || { topic: '', description: '' },
               svgMarkup: null,
+              imageUrl: null,
               rawText: null,
               error: null,
               durationMs: null,
@@ -285,10 +516,13 @@ export default function App() {
               {
                 id: `tool-${msg.callId || Date.now()}`,
                 role: 'tool',
-                text: `Drawing: "${msg.args?.topic || 'Educational diagram'}"`,
+                text: isImageTool
+                  ? `🎨 Creating picture with Nano Banana 2: "${msg.args?.topic || 'Visual Concept'}"`
+                  : `✏️ Drawing SVG diagram: "${msg.args?.topic || 'Educational diagram'}"`,
                 timestamp: Date.now(),
                 toolDetails: {
                   callId: msg.callId,
+                  toolName: isImageTool ? 'image_generator' : 'svg_creator',
                   topic: msg.args?.topic || '',
                   targetClass: msg.args?.targetClass,
                   description: msg.args?.description || '',
@@ -297,7 +531,11 @@ export default function App() {
               },
             ]);
           } else if (msg.type === 'tool_call_result') {
-            const hasSvg = msg.success && !!msg.svgMarkup;
+            const isImageTool = msg.name === 'image_generator' || !!msg.imageUrl;
+            const hasSvg = !isImageTool && msg.success && !!msg.svgMarkup;
+            const hasImage = isImageTool && msg.success && !!msg.imageUrl;
+            const succeeded = hasSvg || hasImage;
+
             if (hasSvg && msg.svgMarkup) {
               setLatestSvg(msg.svgMarkup);
               // Save to this session's visual collection for parent timeline
@@ -308,18 +546,38 @@ export default function App() {
                   topic: msg.args?.topic || 'Educational diagram',
                   targetClass: msg.args?.targetClass || sessionConfig.targetClass,
                   description: msg.args?.description || '',
+                  type: 'svg',
                   svgMarkup: msg.svgMarkup,
+                  generator: 'svg_creator',
+                  timestamp: Date.now(),
+                },
+              ]);
+            } else if (hasImage && msg.imageUrl) {
+              setLatestImage(msg.imageUrl);
+              // Save to this session's visual collection for parent timeline
+              setSessionVisuals((prev) => [
+                ...prev,
+                {
+                  callId: msg.callId,
+                  topic: msg.args?.topic || 'Educational picture',
+                  targetClass: msg.args?.targetClass || sessionConfig.targetClass,
+                  description: msg.args?.description || msg.args?.prompt || '',
+                  type: 'image',
+                  imageUrl: msg.imageUrl,
+                  generator: 'image_generator',
                   timestamp: Date.now(),
                 },
               ]);
             }
 
             setToolCallState({
-              status: hasSvg ? 'succeeded' : 'failed',
+              status: succeeded ? 'succeeded' : 'failed',
               name: msg.name,
               callId: msg.callId,
+              visualType: isImageTool ? 'image' : 'svg',
               args: msg.args || { topic: '', description: '' },
               svgMarkup: msg.svgMarkup || null,
+              imageUrl: msg.imageUrl || null,
               rawText: msg.rawText || null,
               error: msg.error || null,
               durationMs: msg.durationMs || null,
@@ -335,7 +593,8 @@ export default function App() {
                     ...m,
                     toolDetails: {
                       ...m.toolDetails,
-                      status: hasSvg ? 'succeeded' : 'failed',
+                      status: succeeded ? 'succeeded' : 'failed',
+                      imageUrl: msg.imageUrl,
                     },
                   };
                 }
@@ -454,8 +713,71 @@ export default function App() {
     }
   };
 
+  // Saves the current conversation to the parent timeline & generates AI continuity summary
+  const handleSaveCurrentSession = async () => {
+    if (messages.length === 0) return;
+    setIsSavingSession(true);
+    try {
+      const duration = sessionStartTime
+        ? Math.max(15, Math.round((Date.now() - sessionStartTime) / 1000))
+        : 60;
+
+      const userEmail = currentUser?.email || 'guest';
+      const res = await fetch('/api/sessions/summarize-and-save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-user-email': userEmail,
+        },
+        body: JSON.stringify({
+          userEmail,
+          id: `session-${Date.now()}`,
+          startedAt: sessionStartTime || Date.now() - duration * 1000,
+          endedAt: Date.now(),
+          durationSeconds: duration,
+          targetClass: sessionConfig.targetClass,
+          transcript: messages,
+          visuals: sessionVisuals,
+          tokensUsed: cumulativeTokens,
+        }),
+      });
+
+      const data = await res.json();
+      if (data.session || data.sessions) {
+        const addedCount = Array.isArray(data.sessions) ? data.sessions.length : 1;
+        setSavedSessionCount((c) => c + addedCount);
+        const latestSess =
+          Array.isArray(data.sessions) && data.sessions.length > 0
+            ? data.sessions[data.sessions.length - 1]
+            : data.session;
+        if (latestSess) {
+          setActiveResumeMemory({
+            resumeContext: latestSess.resumeContext,
+            resumedTitle: latestSess.title,
+          });
+          // Also persist session to user's private Firestore subcollection
+          if (currentUser) {
+            try {
+              await saveSessionToFirestore(currentUser.id, latestSess);
+            } catch (fErr) {
+              console.warn('Failed to persist session to Firestore:', fErr);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to save learning session:', err);
+    } finally {
+      setIsSavingSession(false);
+    }
+  };
+
   const handleToggleConnect = () => {
     if (connectionStatus === 'connected' || connectionStatus === 'connecting') {
+      // Auto-save lesson milestone to timeline when interaction ends
+      if (messages.length >= 2) {
+        handleSaveCurrentSession();
+      }
       disconnectSession();
     } else {
       connectSession();
@@ -519,45 +841,6 @@ export default function App() {
           }
         }
       }, 800);
-    }
-  };
-
-  // Saves the current conversation to the parent timeline & generates AI continuity summary
-  const handleSaveCurrentSession = async () => {
-    if (messages.length === 0) return;
-    setIsSavingSession(true);
-    try {
-      const duration = sessionStartTime
-        ? Math.max(15, Math.round((Date.now() - sessionStartTime) / 1000))
-        : 60;
-
-      const res = await fetch('/api/sessions/summarize-and-save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: `session-${Date.now()}`,
-          startedAt: sessionStartTime || Date.now() - duration * 1000,
-          endedAt: Date.now(),
-          durationSeconds: duration,
-          targetClass: sessionConfig.targetClass,
-          transcript: messages,
-          visuals: sessionVisuals,
-          tokensUsed: cumulativeTokens,
-        }),
-      });
-
-      const data = await res.json();
-      if (data.session) {
-        setSavedSessionCount((c) => c + 1);
-        setActiveResumeMemory({
-          resumeContext: data.session.resumeContext,
-          resumedTitle: data.session.title,
-        });
-      }
-    } catch (err) {
-      console.error('Failed to save learning session:', err);
-    } finally {
-      setIsSavingSession(false);
     }
   };
 
@@ -634,6 +917,143 @@ export default function App() {
     }
   };
 
+  // Google Sign-In & Sign-Up resolution
+  const handleGoogleAuthSuccess = (profile: UserProfile, isFirstTime: boolean) => {
+    setCurrentUser(profile);
+    try {
+      localStorage.setItem('truncky_current_user', JSON.stringify(profile));
+    } catch (e) {
+      console.warn('Could not save user to localStorage:', e);
+    }
+
+    const localOnboarded =
+      localStorage.getItem(`truncky_onboarded_${profile.id}`) === 'true';
+    const hasClassAndLang =
+      !!profile.preferences?.targetClass &&
+      profile.preferences.targetClass.trim() !== '' &&
+      Array.isArray(profile.preferences?.languages) &&
+      profile.preferences.languages.length > 0;
+    const isCompleted = !isFirstTime && (!!profile.onboardingCompleted || localOnboarded || hasClassAndLang);
+
+    // Only prompt with questions if brand new first-time user and not yet onboarded
+    if (!isCompleted) {
+      setTimeout(() => {
+        setIsKidOnboardingOpen(true);
+      }, 250);
+    } else if (profile.preferences && profile.preferences.targetClass) {
+      // Returning user: re-apply existing profile preferences directly
+      handleSaveKidPreferences(profile.preferences);
+    }
+  };
+
+  // Saves language and grade preferences, updating ONLY those specific parts in the system prompt
+  const handleSaveKidPreferences = async (prefs: {
+    languages: string[];
+    primaryLanguage: string;
+    targetClass: string;
+    childName?: string;
+  }) => {
+    const updatedSystemPrompt = buildTeacherPrompt({
+      selectedLanguages: prefs.languages,
+      targetClass: prefs.targetClass,
+      childName: prefs.childName,
+    });
+
+    const updatedConfig: SessionConfig = {
+      ...sessionConfig,
+      targetClass: prefs.targetClass,
+      selectedLanguages: prefs.languages,
+      systemPrompt: updatedSystemPrompt,
+    };
+
+    setSessionConfig(updatedConfig);
+    setEffectiveConfig((prev) =>
+      prev
+        ? {
+            ...prev,
+            targetClass: prefs.targetClass,
+            selectedLanguages: prefs.languages,
+            systemPrompt: updatedSystemPrompt,
+          }
+        : updatedConfig
+    );
+
+    // Persist in user profile & Firestore
+    if (currentUser) {
+      const updatedProfile: UserProfile = {
+        ...currentUser,
+        onboardingCompleted: true,
+        preferences: prefs,
+      };
+      setCurrentUser(updatedProfile);
+      try {
+        localStorage.setItem('truncky_current_user', JSON.stringify(updatedProfile));
+        localStorage.setItem(`truncky_onboarded_${currentUser.id}`, 'true');
+        await saveUserKidPreferences(currentUser.id, prefs);
+      } catch (e) {
+        console.warn('Failed to update Firestore with preferences:', e);
+      }
+    }
+
+    // Synchronize over active WebSocket if connected
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'update_target_class',
+            targetClass: prefs.targetClass,
+          })
+        );
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'update_system_prompt',
+            systemPrompt: updatedSystemPrompt,
+          })
+        );
+      } catch (err) {
+        console.warn('Failed to notify WebSocket of prompt updates:', err);
+      }
+    }
+
+    setIsKidOnboardingOpen(false);
+  };
+
+  const handleSignOut = async () => {
+    if (messages.length >= 2) {
+      await handleSaveCurrentSession();
+    }
+    if (connectionStatus === 'connected' || connectionStatus === 'connecting') {
+      disconnectSession();
+    }
+    try {
+      await signOutUser();
+    } catch (err) {
+      console.warn('Error signing out:', err);
+    }
+    setCurrentUser(null);
+    try {
+      localStorage.removeItem('truncky_current_user');
+    } catch {}
+  };
+
+  // Auth checking splash screen
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-linear-to-b from-indigo-50 via-white to-amber-50/40 flex flex-col items-center justify-center p-6 text-neutral-800">
+        <div className="h-16 w-16 rounded-2xl bg-linear-to-br from-indigo-600 to-purple-700 text-white flex items-center justify-center text-4xl shadow-md animate-bounce mb-4 select-none">
+          🐘
+        </div>
+        <p className="text-sm font-bold text-neutral-800">Connecting to Truncky AI...</p>
+        <p className="text-xs text-neutral-500 mt-1">Verifying your learning account...</p>
+      </div>
+    );
+  }
+
+  // Gateway: If not logged in, render the LandingPage as the landing page of the web app
+  if (!currentUser) {
+    return <LandingPage onAuthSuccess={handleGoogleAuthSuccess} />;
+  }
+
   return (
     <div className="min-h-screen bg-neutral-100 text-neutral-900 flex flex-col font-sans selection:bg-indigo-100 selection:text-indigo-900">
       {/* Header */}
@@ -646,7 +1066,10 @@ export default function App() {
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-xl sm:text-2xl font-black tracking-tight text-neutral-950 font-serif">
-                  Truncky AI
+                  Truncky AI{' '}
+                  <span className="text-xs sm:text-sm font-medium text-neutral-500 font-sans tracking-normal">
+                    (Truncky ~ Elephant)
+                  </span>
                 </h1>
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
                   <Sparkles className="h-3 w-3 text-amber-600" />
@@ -659,7 +1082,48 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 text-xs">
+          <div className="flex flex-wrap items-center gap-2.5 text-xs">
+            {/* Authenticated Parent & Kid Configuration Pill */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsKidOnboardingOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 text-indigo-950 font-semibold text-xs transition-colors cursor-pointer"
+                title="Edit languages & grade configuration"
+              >
+                <Globe className="h-3.5 w-3.5 text-indigo-600" />
+                <span className="hidden sm:inline font-medium">
+                  {currentUser.preferences?.childName ? `${currentUser.preferences.childName}: ` : ''}
+                  {currentUser.preferences?.languages?.slice(0, 2).join(', ')}
+                  {(currentUser.preferences?.languages?.length || 0) > 2 ? '...' : ''}
+                </span>
+                <span className="text-[10px] bg-indigo-200 text-indigo-900 px-1.5 py-0.5 rounded-full font-bold">
+                  {currentUser.preferences?.targetClass || sessionConfig.targetClass}
+                </span>
+                <Edit3 className="h-3 w-3 text-indigo-500" />
+              </button>
+
+              {/* Logged in Parent User Avatar & Sign Out */}
+              <div className="flex items-center gap-1.5 pl-1.5 border-l border-neutral-200">
+                <img
+                  src={currentUser.avatarUrl}
+                  alt={currentUser.name}
+                  className="w-7 h-7 rounded-full bg-neutral-100 border border-neutral-300"
+                />
+                <span className="text-xs font-bold text-neutral-800 max-w-[90px] truncate hidden md:inline">
+                  {currentUser.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  title="Sign Out"
+                  className="p-1 text-neutral-400 hover:text-rose-600 transition-colors cursor-pointer"
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+
             {/* Parent Learning Timeline Button */}
             <button
               type="button"
@@ -708,7 +1172,7 @@ export default function App() {
           onApplyConfig={handleApplyConfig}
         />
 
-        {/* Two-Panel Core Workspace - Fixed height to ensure SVG visual panel remains constantly in view */}
+        {/* Two-Panel Core Workspace - Fixed height to ensure visual panel remains constantly in view */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 lg:h-[620px]">
           {/* Left Panel: Teacher Conversation */}
           <div className="h-[520px] lg:h-full min-h-0">
@@ -737,6 +1201,7 @@ export default function App() {
           <div className="h-[520px] lg:h-full min-h-0">
             <VisualPanel
               latestSvg={latestSvg}
+              latestImage={latestImage}
               toolCallState={toolCallState}
               targetClass={sessionConfig.targetClass}
             />
@@ -757,12 +1222,24 @@ export default function App() {
         />
       </main>
 
-      {/* Parent Learning Portal & Timeline Modal */}
+      {/* Parent Learning Portal & Timeline Modal (User-Isolated) */}
       <ParentLearningPortal
         isOpen={isParentPortalOpen}
         onClose={() => setIsParentPortalOpen(false)}
         onResumeSession={handleResumeFromPastSession}
         targetClass={sessionConfig.targetClass}
+        userId={currentUser.id}
+        userEmail={currentUser.email}
+        userName={currentUser.name}
+        onSessionDeleted={() => loadUserSessions(currentUser.email)}
+      />
+
+      {/* First-Time & Ongoing Kid Profile Onboarding (Languages + Class) */}
+      <KidOnboardingModal
+        isOpen={isKidOnboardingOpen}
+        userProfile={currentUser}
+        onClose={() => setIsKidOnboardingOpen(false)}
+        onSave={handleSaveKidPreferences}
       />
     </div>
   );

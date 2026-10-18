@@ -7,14 +7,44 @@ import { LearningSession, TimelineMilestone, SessionVisual, ChatMessage } from '
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.resolve(__dirname, '../../data');
-const SESSIONS_FILE = path.resolve(DATA_DIR, 'learning-sessions.json');
+const USERS_DIR = path.resolve(DATA_DIR, 'users');
+const LEGACY_SESSIONS_FILE = path.resolve(DATA_DIR, 'learning-sessions.json');
 
-// Ensure data directory exists
+// Ensure data and users directory exist
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
+if (!fs.existsSync(USERS_DIR)) {
+  fs.mkdirSync(USERS_DIR, { recursive: true });
+}
 
-// Initial seed sessions so parents immediately see an inspiring timeline & AI memory
+/**
+ * Sanitizes an email address or user identifier into a safe directory name
+ */
+export function sanitizeUserKey(userKey?: string): string {
+  if (!userKey || userKey.trim() === '' || userKey.toLowerCase() === 'guest') {
+    return 'guest';
+  }
+  return userKey
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9_.-]/g, '_');
+}
+
+/**
+ * Resolves the private isolated storage file for a specific user.
+ * Each user gets their own sandboxed folder under /data/users/<sanitized_email>/
+ */
+export function getUserSessionsFile(userKey?: string): string {
+  const sanitized = sanitizeUserKey(userKey);
+  const userFolder = path.resolve(USERS_DIR, sanitized);
+  if (!fs.existsSync(userFolder)) {
+    fs.mkdirSync(userFolder, { recursive: true });
+  }
+  return path.resolve(userFolder, 'learning-sessions.json');
+}
+
+// Initial seed sessions
 const INITIAL_SEED_SESSIONS: LearningSession[] = [
   {
     id: 'seed-session-1',
@@ -111,7 +141,7 @@ const INITIAL_SEED_SESSIONS: LearningSession[] = [
         timestamp: Date.now() - 86400000 + 1000 * 60 * 5,
         type: 'visual',
         title: 'Tamil Letter "அ" Card Displayed',
-        description: 'Rendered Unicode character "அ" with clear pronunciation label.',
+        description: 'Rendered character "அ" with clear pronunciation label.',
       },
       {
         id: 'm2-3',
@@ -144,45 +174,61 @@ const INITIAL_SEED_SESSIONS: LearningSession[] = [
   },
 ];
 
-// Helper to load sessions from file
-export function loadSessions(): LearningSession[] {
+// Helper to load sessions from user's isolated file
+export function loadSessions(userKey?: string): LearningSession[] {
+  const filePath = getUserSessionsFile(userKey);
+  const isGuest = sanitizeUserKey(userKey) === 'guest';
   try {
-    if (!fs.existsSync(SESSIONS_FILE)) {
-      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(INITIAL_SEED_SESSIONS, null, 2), 'utf-8');
-      return INITIAL_SEED_SESSIONS;
+    if (!fs.existsSync(filePath)) {
+      // For guest, check legacy file first or use initial seeds
+      let initial: LearningSession[] = [];
+      if (isGuest) {
+        if (fs.existsSync(LEGACY_SESSIONS_FILE)) {
+          try {
+            initial = JSON.parse(fs.readFileSync(LEGACY_SESSIONS_FILE, 'utf-8'));
+          } catch {
+            initial = INITIAL_SEED_SESSIONS;
+          }
+        } else {
+          initial = INITIAL_SEED_SESSIONS;
+        }
+      }
+      fs.writeFileSync(filePath, JSON.stringify(initial, null, 2), 'utf-8');
+      return initial;
     }
-    const raw = fs.readFileSync(SESSIONS_FILE, 'utf-8');
+    const raw = fs.readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
       return parsed.sort((a, b) => b.startedAt - a.startedAt);
     }
-    return INITIAL_SEED_SESSIONS;
+    return isGuest ? INITIAL_SEED_SESSIONS : [];
   } catch (err) {
-    console.error('Failed to read learning sessions file:', err);
-    return INITIAL_SEED_SESSIONS;
+    console.error(`Failed to read learning sessions file for ${userKey}:`, err);
+    return isGuest ? INITIAL_SEED_SESSIONS : [];
   }
 }
 
-// Helper to save sessions to file
-export function saveSessions(sessions: LearningSession[]): void {
+// Helper to save sessions to user's isolated file
+export function saveSessions(sessions: LearningSession[], userKey?: string): void {
+  const filePath = getUserSessionsFile(userKey);
   try {
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf-8');
+    fs.writeFileSync(filePath, JSON.stringify(sessions, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Failed to write learning sessions file:', err);
+    console.error(`Failed to write learning sessions file for ${userKey}:`, err);
   }
 }
 
-export function getAllSessions(): LearningSession[] {
-  return loadSessions();
+export function getAllSessions(userKey?: string): LearningSession[] {
+  return loadSessions(userKey);
 }
 
-export function getSessionById(id: string): LearningSession | null {
-  const sessions = loadSessions();
+export function getSessionById(id: string, userKey?: string): LearningSession | null {
+  const sessions = loadSessions(userKey);
   return sessions.find((s) => s.id === id) || null;
 }
 
-export function saveOrUpdateSession(sessionData: LearningSession): LearningSession {
-  const sessions = loadSessions();
+export function saveOrUpdateSession(sessionData: LearningSession, userKey?: string): LearningSession {
+  const sessions = loadSessions(userKey);
   const existingIdx = sessions.findIndex((s) => s.id === sessionData.id);
 
   if (existingIdx >= 0) {
@@ -194,31 +240,31 @@ export function saveOrUpdateSession(sessionData: LearningSession): LearningSessi
     sessions.unshift(sessionData);
   }
 
-  saveSessions(sessions);
+  saveSessions(sessions, userKey);
   return sessionData;
 }
 
-export function deleteSession(id: string): boolean {
-  const sessions = loadSessions();
+export function deleteSession(id: string, userKey?: string): boolean {
+  const sessions = loadSessions(userKey);
   const filtered = sessions.filter((s) => s.id !== id);
   if (filtered.length !== sessions.length) {
-    saveSessions(filtered);
+    saveSessions(filtered, userKey);
     return true;
   }
   return false;
 }
 
 /**
- * Generates the "AI Memory / Resume Context" for the AI teacher.
- * This summary allows the AI to immediately acknowledge where the child left off,
+ * Generates the "AI Memory / Resume Context" for Truncky AI for a specific user.
+ * Allows the AI to immediately acknowledge where this child left off,
  * greet them warmly, and resume without repetition.
  */
-export function getLatestResumeContext(targetClass?: string): {
+export function getLatestResumeContext(targetClass?: string, userKey?: string): {
   hasHistory: boolean;
   latestSession: LearningSession | null;
   resumeInstructionText: string;
 } {
-  const sessions = loadSessions();
+  const sessions = loadSessions(userKey);
   if (sessions.length === 0) {
     return {
       hasHistory: false,
@@ -246,9 +292,10 @@ Here is what the child learned in their previous session on ${dateStr}:
 - Where the conversation left off: ${latest.resumeContext || latest.summary}
 
 HOW TO GREET AND RESUME:
-1. When the child says hello or begins speaking, warmly welcome them back like their ongoing teacher (e.g.: "Welcome back! In our last lesson, we were talking about ${latest.title}...").
-2. Ask if they want to continue from where you left off, do a fun 30-second recap, or explore a new topic today.
-3. Build directly on what they already know without re-teaching the basic points they already grasped.
+1. When the child says hello or begins speaking, warmly welcome them back like their ongoing elephant teacher Truncky (e.g.: "Welcome back! In our last lesson, we were talking about ${latest.title}...").
+2. Ask if they want to continue from where you left off, do a fun 30-second recap, or explore a brand new topic today.
+3. If they deviate to a new topic (e.g. asking about animals, letters, space), enthusiastically embrace the new topic! The system will automatically record it as a separate learning timeline entry.
+4. Build directly on what they already know without re-teaching the basic points they already grasped.
 `;
 
   return {
@@ -260,29 +307,39 @@ HOW TO GREET AND RESUME:
 
 /**
  * Synthesizes an intelligent pedagogical summary of a session using Gemini.
- * Extracts title, key learnings, timeline milestones, and the resume memory snippet.
+ * CRITICAL FEATURE: Automatically detects topic deviations/transitions!
+ * If the conversation began on Topic A (e.g. from resume) and then shifted to Topic B,
+ * this function splits the dialogue into separate, distinct LearningSession entries
+ * so each subject gets its own clean timeline record.
  */
-export async function summarizeSessionWithAI(
+export async function summarizeAndSegmentSessionsWithAI(
   ai: GoogleGenAI,
   session: {
     targetClass: string;
     transcript: ChatMessage[];
     visuals: SessionVisual[];
-  }
-): Promise<{
-  title: string;
-  summary: string;
-  keyLearnings: string[];
-  skillsCovered: string[];
-  timeline: TimelineMilestone[];
-  resumeContext: string;
-}> {
-  // If transcript is very short, generate a clean default
+    durationSeconds?: number;
+    startedAt?: number;
+    endedAt?: number;
+    tokensUsed?: number;
+  },
+  userKey?: string
+): Promise<LearningSession[]> {
+  const baseStartedAt = session.startedAt || Date.now() - (session.durationSeconds || 120) * 1000;
+  const baseEndedAt = session.endedAt || Date.now();
+  const totalDuration = session.durationSeconds || Math.max(30, Math.round((baseEndedAt - baseStartedAt) / 1000));
+
+  // If transcript is very short, generate a clean single default
   if (!session.transcript || session.transcript.length < 2) {
-    const topic = session.visuals[0]?.topic || 'Introductory Exploration';
-    return {
+    const topic = session.visuals[0]?.topic || 'Introductory Lesson';
+    const singleSession: LearningSession = {
+      id: `session-${Date.now()}`,
+      startedAt: baseStartedAt,
+      endedAt: baseEndedAt,
+      durationSeconds: totalDuration,
+      targetClass: session.targetClass,
       title: `${topic} (${session.targetClass})`,
-      summary: `A brief exploration of ${topic} with the AI teacher.`,
+      summary: `A brief exploration of ${topic} with Truncky AI.`,
       keyLearnings: [`Explored concepts related to ${topic}.`],
       skillsCovered: ['General Knowledge', 'Inquiry'],
       timeline: [
@@ -291,57 +348,75 @@ export async function summarizeSessionWithAI(
           timestamp: Date.now(),
           type: 'concept',
           title: `Introduced ${topic}`,
-          description: `Teacher introduced ${topic} to the student.`,
+          description: `Truncky introduced ${topic} to the student.`,
         },
       ],
+      transcript: session.transcript || [],
+      visuals: session.visuals || [],
       resumeContext: `Child started learning about ${topic}. Ready to explore further or answer any questions.`,
+      tokensUsed: session.tokensUsed || 0,
     };
+    saveOrUpdateSession(singleSession);
+    return [singleSession];
   }
 
   const transcriptText = session.transcript
     .filter((m) => m.role === 'student' || m.role === 'teacher')
-    .map((m) => `${m.role === 'student' ? 'Child' : 'Teacher'}: ${m.text}`)
+    .map((m, idx) => `[Message ${idx}] ${m.role === 'student' ? 'Child' : 'Teacher'}: ${m.text}`)
     .join('\n');
 
-  const visualTopics = session.visuals.map((v) => v.topic).join(', ');
+  const visualSummary = session.visuals
+    .map((v) => `Visual [${v.type || 'svg'}]: "${v.topic}" (${v.description || ''})`)
+    .join(', ');
 
-  const prompt = `You are an educational assistant analyzing a tutoring conversation between an AI teacher and a young child in ${session.targetClass}.
+  const prompt = `You are an educational psychologist and timeline analyzer for young children in ${session.targetClass}.
 
 Here is the dialogue transcript:
 ${transcriptText}
 
-Visuals generated during lesson: ${visualTopics || 'None'}
+Visuals generated: ${visualSummary || 'None'}
 
-Please generate an educational progress summary for parents and for the AI teacher to resume later.
+CRITICAL TASK: TOPIC DEVIATION DETECTION & TIMELINE SEGMENTATION
+Young children often start on one topic (or resume from a previous lesson, e.g. "Plants & Chlorophyll") and then deviate or shift to a completely different subject (e.g. "Writing Tamil letter Ka", "The Solar System", "Dinosaurs", "Adding numbers").
+
+Examine whether this interaction covered:
+- A single topic: return 1 item in "topics".
+- Multiple distinct topics (topic deviation): return multiple sequential items in "topics" so that parents can see separate timeline entries for each distinct topic explored!
+
 Return your response ONLY as valid JSON matching this exact structure:
 {
-  "title": "Short descriptive topic title (e.g., 'Parts of a Plant & Photosynthesis')",
-  "summary": "2-3 sentences explaining for parents what the child learned and how they engaged.",
-  "keyLearnings": [
-    "Specific concept or fact 1 the child learned",
-    "Specific concept or fact 2 the child learned",
-    "Specific concept or fact 3 the child learned"
-  ],
-  "skillsCovered": ["Skill/Domain 1", "Skill/Domain 2", "Skill/Domain 3"],
-  "timeline": [
+  "topics": [
     {
-      "type": "concept",
-      "title": "Short milestone title",
-      "description": "What was explained or grasped"
-    },
-    {
-      "type": "visual",
-      "title": "Visual diagram observed",
-      "description": "Details about the illustration seen"
-    },
-    {
-      "type": "question",
-      "title": "Child asked question",
-      "description": "Summary of question and how it was answered",
-      "childQuestion": "Question text"
+      "title": "Short descriptive topic title (e.g., 'Parts of a Plant & Photosynthesis' or 'Writing Tamil Letter அ')",
+      "summary": "2-3 sentences explaining for parents what the child learned on this specific topic.",
+      "keyLearnings": [
+        "Specific concept or fact 1 the child learned",
+        "Specific concept or fact 2 the child learned",
+        "Specific concept or fact 3 the child learned"
+      ],
+      "skillsCovered": ["Skill/Domain 1", "Skill/Domain 2"],
+      "timeline": [
+        {
+          "type": "concept",
+          "title": "Short milestone title",
+          "description": "What was explained or grasped"
+        },
+        {
+          "type": "visual",
+          "title": "Visual seen",
+          "description": "Details about drawing or picture"
+        },
+        {
+          "type": "question",
+          "title": "Child asked question",
+          "description": "Summary of question and answer",
+          "childQuestion": "Question text"
+        }
+      ],
+      "resumeContext": "2-3 sentences detailing exactly where this topic left off and what is logical to explore next when returning.",
+      "visualTopicKeywords": ["keyword1", "keyword2"]
     }
-  ],
-  "resumeContext": "2-3 sentences detailing exactly where the conversation left off and what the next logical lesson step should be when the child returns."
+  ]
 }
 `;
 
@@ -360,48 +435,81 @@ Return your response ONLY as valid JSON matching this exact structure:
 
     const jsonText = response.text || '{}';
     const parsed = JSON.parse(jsonText);
+    const parsedTopics = Array.isArray(parsed.topics) && parsed.topics.length > 0 ? parsed.topics : [parsed];
 
-    // Merge visual SVGs into timeline where relevant
-    const timelineWithIds: TimelineMilestone[] = (parsed.timeline || []).map(
-      (m: any, idx: number) => ({
-        id: `milestone-${Date.now()}-${idx}`,
-        timestamp: Date.now() - (parsed.timeline.length - idx) * 1000 * 60,
-        type: m.type || 'concept',
-        title: m.title || 'Learning Milestone',
-        description: m.description || '',
-        childQuestion: m.childQuestion,
-        svgMarkup: session.visuals[idx]?.svgMarkup || undefined,
-      })
-    );
+    const resultingSessions: LearningSession[] = [];
+    const segmentCount = parsedTopics.length;
+    const durationPerSegment = Math.max(20, Math.floor(totalDuration / segmentCount));
 
-    return {
-      title: parsed.title || 'Learning Session',
-      summary: parsed.summary || 'The child engaged with the AI teacher.',
-      keyLearnings: Array.isArray(parsed.keyLearnings)
-        ? parsed.keyLearnings
-        : ['Concept exploration'],
-      skillsCovered: Array.isArray(parsed.skillsCovered)
-        ? parsed.skillsCovered
-        : ['General Learning'],
-      timeline: timelineWithIds,
-      resumeContext:
-        parsed.resumeContext ||
-        `The child learned about ${parsed.title || 'this topic'}. Ready to continue next time.`,
-    };
+    parsedTopics.forEach((t: any, idx: number) => {
+      const segStart = baseStartedAt + idx * durationPerSegment * 1000;
+      const segEnd = idx === segmentCount - 1 ? baseEndedAt : segStart + durationPerSegment * 1000;
+      const sessionId = `session-${Date.now()}-${idx}`;
+
+      // Associate visuals matching this topic's keywords or split evenly
+      const matchingVisuals = session.visuals.filter((v) => {
+        if (!t.visualTopicKeywords || !Array.isArray(t.visualTopicKeywords)) return true;
+        const topicLower = v.topic.toLowerCase();
+        return t.visualTopicKeywords.some((kw: string) => topicLower.includes(String(kw).toLowerCase()));
+      });
+
+      const assignedVisuals = matchingVisuals.length > 0 ? matchingVisuals : (idx === 0 ? session.visuals : []);
+
+      // Build timeline with IDs and attach visuals
+      const timelineWithIds: TimelineMilestone[] = (t.timeline || []).map((m: any, mIdx: number) => {
+        const assignedVisual = assignedVisuals[mIdx];
+        return {
+          id: `milestone-${Date.now()}-${idx}-${mIdx}`,
+          timestamp: segStart + (mIdx + 1) * Math.floor((durationPerSegment * 1000) / (t.timeline.length + 1)),
+          type: m.type || 'concept',
+          title: m.title || 'Learning Milestone',
+          description: m.description || '',
+          childQuestion: m.childQuestion,
+          visualType: assignedVisual?.type || 'svg',
+          svgMarkup: assignedVisual?.type === 'svg' ? assignedVisual.svgMarkup : undefined,
+          imageUrl: assignedVisual?.type === 'image' ? assignedVisual.imageUrl : undefined,
+        };
+      });
+
+      const sessionObj: LearningSession = {
+        id: sessionId,
+        startedAt: segStart,
+        endedAt: segEnd,
+        durationSeconds: Math.max(15, Math.round((segEnd - segStart) / 1000)),
+        targetClass: session.targetClass,
+        title: t.title || `Learning Topic ${idx + 1}`,
+        summary: t.summary || 'The child engaged in interactive learning with Truncky.',
+        keyLearnings: Array.isArray(t.keyLearnings) ? t.keyLearnings : ['Concept exploration'],
+        skillsCovered: Array.isArray(t.skillsCovered) ? t.skillsCovered : ['General Learning'],
+        timeline: timelineWithIds,
+        transcript: session.transcript,
+        visuals: assignedVisuals,
+        resumeContext:
+          t.resumeContext || `The child learned about ${t.title || 'this topic'}. Ready to continue next time.`,
+        tokensUsed: Math.floor((session.tokensUsed || 0) / segmentCount),
+      };
+
+      saveOrUpdateSession(sessionObj, userKey);
+      resultingSessions.push(sessionObj);
+    });
+
+    return resultingSessions;
   } catch (err) {
-    console.warn('Failed to summarize session with AI, using fallback:', err);
+    console.warn('Failed to segment session with AI, using single session fallback:', err);
     const firstStudentMsg = session.transcript.find((m) => m.role === 'student')?.text || '';
     const title =
       session.visuals[0]?.topic ||
       (firstStudentMsg.length > 5 ? firstStudentMsg.slice(0, 30) : 'Learning Session');
 
-    return {
+    const singleSession: LearningSession = {
+      id: `session-${Date.now()}`,
+      startedAt: baseStartedAt,
+      endedAt: baseEndedAt,
+      durationSeconds: totalDuration,
+      targetClass: session.targetClass,
       title: `${title} (${session.targetClass})`,
-      summary: `The child practiced and discussed ${title} with the AI teacher.`,
-      keyLearnings: [
-        `Explored key ideas in ${title}`,
-        'Engaged in interactive dialogue with the teacher',
-      ],
+      summary: `The child practiced and discussed ${title} with Truncky AI.`,
+      keyLearnings: [`Explored key ideas in ${title}`, 'Engaged in interactive dialogue with Truncky'],
       skillsCovered: ['Listening & Speaking', 'Curiosity'],
       timeline: [
         {
@@ -409,10 +517,16 @@ Return your response ONLY as valid JSON matching this exact structure:
           timestamp: Date.now(),
           type: 'concept',
           title: `Discussed ${title}`,
-          description: 'Child participated in live tutoring.',
+          description: 'Child participated in live tutoring with Truncky.',
         },
       ],
+      transcript: session.transcript || [],
+      visuals: session.visuals || [],
       resumeContext: `Child covered ${title}. Next session can build on this or start a new topic.`,
+      tokensUsed: session.tokensUsed || 0,
     };
+
+    saveOrUpdateSession(singleSession, userKey);
+    return [singleSession];
   }
 }

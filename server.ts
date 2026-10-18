@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Modality, LiveServerMessage, ThinkingLevel } from '@google/genai';
@@ -12,15 +13,19 @@ import {
   CLASS_GUIDELINES,
   extractAndSanitizeSvg,
 } from './src/server/svg-creator.ts';
-import { DEFAULT_TEACHER_PROMPT } from './src/utils/prompts.ts';
+import { DEFAULT_TEACHER_PROMPT, buildTeacherPrompt } from './src/utils/prompts.ts';
 import {
   getAllSessions,
   getSessionById,
   saveOrUpdateSession,
   deleteSession,
   getLatestResumeContext,
-  summarizeSessionWithAI,
+  summarizeAndSegmentSessionsWithAI,
 } from './src/server/session-storage.ts';
+import {
+  imageGeneratorFunctionDeclaration,
+  executeImageGenerator,
+} from './src/server/image-generator.ts';
 import { LearningSession } from './src/types/index.ts';
 
 dotenv.config();
@@ -136,6 +141,28 @@ app.post('/api/generate-svg', async (req, res) => {
   }
 });
 
+// REST endpoint for direct Image Generation with Nano Banana 2 (gemini-3.1-flash-lite-image / gemini-nano-banana-2.1)
+app.post('/api/generate-image', async (req, res) => {
+  try {
+    const { prompt, topic, targetClass } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: 'Missing prompt in request body.' });
+    }
+
+    const result = await executeImageGenerator(svgAi, {
+      prompt,
+      topic: topic || 'Educational Visual',
+      targetClass: targetClass || 'Class 2',
+    });
+
+    return res.json(result);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error('API /generate-image error:', errorMsg);
+    return res.status(500).json({ error: errorMsg });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
@@ -145,11 +172,20 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Learning Sessions & Parent Timeline Endpoints
+// Helper to extract the authenticated user's email or default to guest
+function extractUserEmail(req: express.Request): string {
+  const headerEmail = (req.headers['x-user-email'] as string) || '';
+  const queryEmail = (req.query.userEmail as string) || '';
+  const bodyEmail = (req.body?.userEmail as string) || '';
+  return headerEmail || queryEmail || bodyEmail || 'guest';
+}
+
+// Learning Sessions & Parent Timeline Endpoints (Strictly user-isolated)
 app.get('/api/sessions', (req, res) => {
   try {
-    const sessions = getAllSessions();
-    res.json({ sessions });
+    const userEmail = extractUserEmail(req);
+    const sessions = getAllSessions(userEmail);
+    res.json({ sessions, userEmail });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -157,9 +193,10 @@ app.get('/api/sessions', (req, res) => {
 
 app.get('/api/sessions/:id', (req, res) => {
   try {
-    const session = getSessionById(req.params.id);
+    const userEmail = extractUserEmail(req);
+    const session = getSessionById(req.params.id, userEmail);
     if (!session) return res.status(404).json({ error: 'Session not found' });
-    res.json({ session });
+    res.json({ session, userEmail });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -167,12 +204,13 @@ app.get('/api/sessions/:id', (req, res) => {
 
 app.post('/api/sessions', (req, res) => {
   try {
+    const userEmail = extractUserEmail(req);
     const sessionData = req.body;
     if (!sessionData || !sessionData.id) {
       return res.status(400).json({ error: 'Missing session data or id' });
     }
-    const saved = saveOrUpdateSession(sessionData);
-    res.json({ session: saved });
+    const saved = saveOrUpdateSession(sessionData, userEmail);
+    res.json({ session: saved, userEmail });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -180,33 +218,31 @@ app.post('/api/sessions', (req, res) => {
 
 app.post('/api/sessions/summarize-and-save', async (req, res) => {
   try {
+    const userEmail = extractUserEmail(req);
     const { id, startedAt, endedAt, durationSeconds, targetClass, transcript, visuals, tokensUsed } =
       req.body;
-    const aiSummary = await summarizeSessionWithAI(svgAi, {
-      targetClass: targetClass || 'Class 2',
-      transcript: transcript || [],
-      visuals: visuals || [],
+    
+    // Automatically detects topic deviation/transition for this specific user's timeline!
+    const resultingSessions = await summarizeAndSegmentSessionsWithAI(
+      svgAi,
+      {
+        targetClass: targetClass || 'Class 2',
+        transcript: transcript || [],
+        visuals: visuals || [],
+        durationSeconds,
+        startedAt,
+        endedAt,
+        tokensUsed,
+      },
+      userEmail
+    );
+
+    res.json({
+      sessions: resultingSessions,
+      session: resultingSessions[0] || null,
+      segmentedCount: resultingSessions.length,
+      userEmail,
     });
-
-    const fullSession: LearningSession = {
-      id: id || `session-${Date.now()}`,
-      startedAt: startedAt || Date.now() - (durationSeconds || 60) * 1000,
-      endedAt: endedAt || Date.now(),
-      durationSeconds: durationSeconds || 60,
-      targetClass: targetClass || 'Class 2',
-      title: aiSummary.title,
-      summary: aiSummary.summary,
-      keyLearnings: aiSummary.keyLearnings,
-      skillsCovered: aiSummary.skillsCovered,
-      timeline: aiSummary.timeline,
-      transcript: transcript || [],
-      visuals: visuals || [],
-      resumeContext: aiSummary.resumeContext,
-      tokensUsed: tokensUsed || 0,
-    };
-
-    saveOrUpdateSession(fullSession);
-    res.json({ session: fullSession });
   } catch (err) {
     console.error('Error in summarize-and-save:', err);
     res.status(500).json({ error: String(err) });
@@ -215,8 +251,9 @@ app.post('/api/sessions/summarize-and-save', async (req, res) => {
 
 app.delete('/api/sessions/:id', (req, res) => {
   try {
-    const deleted = deleteSession(req.params.id);
-    res.json({ success: deleted });
+    const userEmail = extractUserEmail(req);
+    const deleted = deleteSession(req.params.id, userEmail);
+    res.json({ success: deleted, userEmail });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
@@ -224,13 +261,75 @@ app.delete('/api/sessions/:id', (req, res) => {
 
 app.get('/api/resume-context', (req, res) => {
   try {
+    const userEmail = extractUserEmail(req);
     const targetClass = typeof req.query.targetClass === 'string' ? req.query.targetClass : undefined;
-    const context = getLatestResumeContext(targetClass);
-    res.json(context);
+    const context = getLatestResumeContext(targetClass, userEmail);
+    res.json({ ...context, userEmail });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
 });
+
+// User & Kid Learning Profile API (Google Sign In & Onboarding)
+const DATA_DIR = path.resolve(__dirname, 'data');
+const USER_PROFILES_FILE = path.resolve(DATA_DIR, 'user-profiles.json');
+
+app.get('/api/user/profile', (req, res) => {
+  try {
+    if (fs.existsSync(USER_PROFILES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(USER_PROFILES_FILE, 'utf-8'));
+      return res.json({ profile: data.currentProfile || null });
+    }
+    res.json({ profile: null });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post('/api/user/profile', (req, res) => {
+  try {
+    const profile = req.body;
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(
+      USER_PROFILES_FILE,
+      JSON.stringify({ currentProfile: profile }, null, 2),
+      'utf-8'
+    );
+    res.json({ success: true, profile });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Helper to merge incremental speech-to-text / transcription tokens without truncating or repeating
+function mergeTranscriptChunk(currentAccumulated: string, incoming: string): string {
+  const cur = (currentAccumulated || '').trim();
+  const inc = (incoming || '').trim();
+  if (!cur) return incoming || '';
+  if (!inc) return currentAccumulated || '';
+
+  // If incoming already starts with current (Gemini returned an updated full sentence)
+  if (incoming.startsWith(currentAccumulated)) {
+    return incoming;
+  }
+  // If current already starts with incoming (stale or partial replay)
+  if (currentAccumulated.startsWith(incoming)) {
+    return currentAccumulated;
+  }
+  // If incoming contains current as a substring
+  if (incoming.includes(currentAccumulated)) {
+    return incoming;
+  }
+
+  // Token or delta append with appropriate whitespace
+  const needsSpace =
+    !currentAccumulated.endsWith(' ') &&
+    !incoming.startsWith(' ') &&
+    !/^[,.!?;:'")\]\}]/.test(incoming);
+  return currentAccumulated + (needsSpace ? ' ' : '') + incoming;
+}
 
 // Live WebSocket connections
 wss.on('connection', (clientWs: WebSocket) => {
@@ -238,6 +337,13 @@ wss.on('connection', (clientWs: WebSocket) => {
   let isClosing = false;
   let currentTargetClass = 'Class 2';
   let currentMaxOutputTokens = 8192;
+  let currentSelectedLanguages: string[] = ['English'];
+  let currentTeacherTurnId = `teacher-${Date.now()}`;
+  let currentTeacherTurnText = '';
+  let teacherTurnCompleted = false;
+  let currentStudentTurnId = `student-${Date.now()}`;
+  let currentStudentTurnText = '';
+  let studentTurnCompleted = false;
 
   const sendToClient = (data: Record<string, unknown>) => {
     try {
@@ -282,13 +388,26 @@ wss.on('connection', (clientWs: WebSocket) => {
 
         const model = msg.model || 'gemini-3.8-live';
         const voice = msg.voice || 'Zephyr';
-        const baseSystemPrompt = msg.systemPrompt || DEFAULT_TEACHER_PROMPT;
-        const prefixPaddingMs = typeof msg.prefixPaddingMs === 'number' ? msg.prefixPaddingMs : 300;
-        const silenceDurationMs = typeof msg.silenceDurationMs === 'number' ? msg.silenceDurationMs : 500;
+        const sessionUserEmail = msg.userEmail || 'guest';
         currentTargetClass = msg.targetClass || 'Class 2';
         currentMaxOutputTokens = typeof msg.maxOutputTokens === 'number' ? msg.maxOutputTokens : 8192;
+        currentSelectedLanguages = Array.isArray(msg.selectedLanguages) && msg.selectedLanguages.length > 0
+          ? msg.selectedLanguages
+          : ['English', 'Tamil'];
 
-        // Check if resuming from previous learning history
+        // Build teacher prompt dynamically: only targetClass, selectedLanguages, and language checks are updated
+        const baseSystemPrompt =
+          msg.systemPrompt ||
+          buildTeacherPrompt({
+            selectedLanguages: currentSelectedLanguages,
+            targetClass: currentTargetClass,
+            childName: msg.childName,
+          });
+
+        const prefixPaddingMs = typeof msg.prefixPaddingMs === 'number' ? msg.prefixPaddingMs : 300;
+        const silenceDurationMs = typeof msg.silenceDurationMs === 'number' ? msg.silenceDurationMs : 500;
+
+        // Check if resuming from previous learning history (isolated per user)
         let finalSystemPrompt = baseSystemPrompt;
         let resumeNotice: string | null = null;
         let resumedFromSessionTitle: string | null = null;
@@ -299,7 +418,7 @@ wss.on('connection', (clientWs: WebSocket) => {
           resumedFromSessionTitle = msg.resumedTitle || 'Selected Session';
         } else if (msg.useResumeMemory !== false) {
           const { hasHistory, resumeInstructionText, latestSession } =
-            getLatestResumeContext(currentTargetClass);
+            getLatestResumeContext(currentTargetClass, sessionUserEmail);
           if (hasHistory && resumeInstructionText) {
             finalSystemPrompt = `${baseSystemPrompt}\n\n${resumeInstructionText}`;
             resumeNotice = latestSession
@@ -347,14 +466,17 @@ wss.on('connection', (clientWs: WebSocket) => {
               inputAudioTranscription: {},
               tools: [
                 {
-                  functionDeclarations: [svgCreatorFunctionDeclaration],
+                  functionDeclarations: [
+                    svgCreatorFunctionDeclaration,
+                    imageGeneratorFunctionDeclaration,
+                  ],
                 },
               ],
             },
             callbacks: {
               onmessage: async (serverMsg: LiveServerMessage) => {
                 try {
-                  // 1. Process server content parts (audio & text)
+                  // 1. Process server content parts (audio stream)
                   const parts = serverMsg.serverContent?.modelTurn?.parts || [];
                   for (const part of parts) {
                     if (part.inlineData?.data) {
@@ -363,47 +485,82 @@ wss.on('connection', (clientWs: WebSocket) => {
                         data: part.inlineData.data,
                       });
                     }
-                    if (part.text) {
-                      sendToClient({
-                        type: 'transcript_teacher',
-                        text: part.text,
-                      });
-                    }
                   }
 
                   // 2. Output audio transcription (words spoken by the teacher model)
                   // @ts-ignore
                   const outTrans = serverMsg.outputTranscription || serverMsg.serverContent?.outputTranscription;
-                  if (outTrans?.text) {
+                  const teacherPartText = parts.find((p) => p.text)?.text;
+                  const teacherDelta = outTrans?.text || teacherPartText;
+
+                  if (teacherDelta) {
+                    if (teacherTurnCompleted) {
+                      currentTeacherTurnId = `teacher-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                      currentTeacherTurnText = '';
+                      teacherTurnCompleted = false;
+                    }
+                    currentTeacherTurnText = mergeTranscriptChunk(currentTeacherTurnText, teacherDelta);
                     sendToClient({
                       type: 'transcript_teacher',
-                      text: outTrans.text,
-                      finished: !!outTrans.finished,
+                      turnId: currentTeacherTurnId,
+                      text: currentTeacherTurnText,
+                      delta: teacherDelta,
+                      finished: !!outTrans?.finished,
                     });
                   }
 
                   // 3. Input audio transcription (words spoken by the child)
                   // @ts-ignore
                   const inTrans = serverMsg.inputTranscription || serverMsg.serverContent?.inputTranscription;
-                  if (inTrans?.text) {
+                  // @ts-ignore
+                  const interimTrans = serverMsg.interimInputTranscription || serverMsg.serverContent?.interimInputTranscription;
+                  const studentRaw = inTrans?.text || interimTrans?.text;
+
+                  if (studentRaw) {
+                    teacherTurnCompleted = true; // student started speaking, teacher turn is done
+                    if (studentTurnCompleted) {
+                      currentStudentTurnId = `student-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                      currentStudentTurnText = '';
+                      studentTurnCompleted = false;
+                    }
+
+                    currentStudentTurnText = mergeTranscriptChunk(currentStudentTurnText, studentRaw);
+                    if (inTrans?.finished) {
+                      studentTurnCompleted = true;
+                    }
+
                     sendToClient({
                       type: 'transcript_student',
-                      text: inTrans.text,
-                      finished: !!inTrans.finished,
+                      turnId: currentStudentTurnId,
+                      text: currentStudentTurnText,
+                      delta: studentRaw,
+                      finished: !!inTrans?.finished,
+                      isInterim: !inTrans && !!interimTrans,
                     });
                   }
 
                   // 4. Interrupted flag
                   if (serverMsg.serverContent?.interrupted) {
-                    sendToClient({ type: 'interrupted' });
+                    teacherTurnCompleted = true;
+                    studentTurnCompleted = true;
+                    sendToClient({
+                      type: 'interrupted',
+                      turnId: currentTeacherTurnId,
+                      text: currentTeacherTurnText,
+                    });
                   }
 
                   // 5. Turn completion
                   if (serverMsg.serverContent?.turnComplete) {
-                    sendToClient({ type: 'turn_complete' });
+                    teacherTurnCompleted = true;
+                    sendToClient({
+                      type: 'turn_complete',
+                      turnId: currentTeacherTurnId,
+                      text: currentTeacherTurnText,
+                    });
                   }
 
-                  // 6. Handle tool calls (SVG Creator)
+                  // 6. Handle tool calls (SVG Creator & Nano Banana 2 Image Generator)
                   if (serverMsg.toolCall?.functionCalls && serverMsg.toolCall.functionCalls.length > 0) {
                     for (const call of serverMsg.toolCall.functionCalls) {
                       if (call.name === 'svg_creator') {
@@ -422,6 +579,7 @@ wss.on('connection', (clientWs: WebSocket) => {
                           type: 'tool_call_start',
                           callId: call.id,
                           name: call.name,
+                          visualType: 'svg',
                           args: { topic, targetClass, description },
                           timestamp: Date.now(),
                         });
@@ -439,6 +597,7 @@ wss.on('connection', (clientWs: WebSocket) => {
                           type: 'tool_call_result',
                           callId: call.id,
                           name: call.name,
+                          visualType: 'svg',
                           args: { topic, targetClass, description },
                           success: result.success,
                           rawText: result.rawText,
@@ -459,7 +618,7 @@ wss.on('connection', (clientWs: WebSocket) => {
                                 response: {
                                   status: 'success',
                                   topic,
-                                  output: `Educational illustration for "${topic}" generated and shown in the student's visual panel. Now explain the visual to the child and point out the key labelled parts.`,
+                                  output: `Educational diagram for "${topic}" generated and displayed in the student's visual panel. Now explain the visual to the child and point out the key labelled parts.`,
                                 },
                               },
                             ],
@@ -478,6 +637,83 @@ wss.on('connection', (clientWs: WebSocket) => {
                             ],
                           });
                         }
+                      } else if (call.name === 'image_generator') {
+                        const callArgs = (call.args || {}) as {
+                          prompt?: string;
+                          topic?: string;
+                          targetClass?: string;
+                        };
+
+                        const topic = callArgs.topic || 'Visual Concept';
+                        const prompt = callArgs.prompt || topic;
+                        const targetClass = callArgs.targetClass || currentTargetClass || 'Class 2';
+
+                        // 1. Immediately inform client that image tool has started
+                        sendToClient({
+                          type: 'tool_call_start',
+                          callId: call.id,
+                          name: call.name,
+                          visualType: 'image',
+                          args: { topic, targetClass, prompt, description: prompt },
+                          timestamp: Date.now(),
+                        });
+
+                        // 2. Ultra-fast Live response (<5ms): Immediately unblock Gemini Live voice!
+                        // This prevents Gemini Live from pausing or freezing for 58s while graphics render.
+                        try {
+                          session.sendToolResponse({
+                            functionResponses: [
+                              {
+                                id: call.id,
+                                name: call.name,
+                                response: {
+                                  status: 'success',
+                                  topic,
+                                  output: `Educational illustration for "${topic}" is being rendered on the student's visual panel right now. Tell the child cheerfully what you are illustrating and guide them through the concept while the picture appears!`,
+                                },
+                              },
+                            ],
+                          });
+                        } catch (toolRespErr) {
+                          console.warn('Failed to send instant tool response to Gemini Live:', toolRespErr);
+                        }
+
+                        // 3. Asynchronously execute image generation with Nano Banana 2 & 1.5s fast fallback
+                        executeImageGenerator(svgAi, {
+                          prompt,
+                          topic,
+                          targetClass,
+                        })
+                          .then((result) => {
+                            sendToClient({
+                              type: 'tool_call_result',
+                              callId: call.id,
+                              name: call.name,
+                              visualType: result.imageUrl ? 'image' : 'svg',
+                              args: { topic, targetClass, prompt, description: prompt },
+                              success: result.success,
+                              imageUrl: result.imageUrl,
+                              svgMarkup: result.svgFallback,
+                              error: result.error,
+                              durationMs: result.durationMs,
+                              timestamp: Date.now(),
+                            });
+                          })
+                          .catch((genErr: unknown) => {
+                            const errText = genErr instanceof Error ? genErr.message : String(genErr);
+                            console.error('Async image generation error:', errText);
+                            sendToClient({
+                              type: 'tool_call_result',
+                              callId: call.id,
+                              name: call.name,
+                              visualType: 'image',
+                              args: { topic, targetClass, prompt, description: prompt },
+                              success: false,
+                              error: errText,
+                              durationMs: 0,
+                              timestamp: Date.now(),
+                            });
+                          });
                       } else {
                         // Unknown tool fallback
                         session.sendToolResponse({
@@ -531,6 +767,26 @@ wss.on('connection', (clientWs: WebSocket) => {
             type: 'session_status',
             status: 'connected',
           });
+
+          // As soon as Live session is established, AI teacher proactively addresses the student
+          try {
+            const childGreeting = msg.childName ? ` Address the student as "${msg.childName}".` : '';
+            session.sendClientContent({
+              turns: [
+                {
+                  role: 'user',
+                  parts: [
+                    {
+                      text: `[SYSTEM KICKOFF: The live lesson has just begun. Speak first immediately! Warmly greet the student as Truncky, the friendly elephant teacher.${childGreeting} Speak in the configured language(s) with joyful enthusiasm, introduce yourself briefly, and ask an inviting, friendly opening question suitable for ${currentTargetClass} to start today's lesson!]`,
+                    },
+                  ],
+                },
+              ],
+              turnComplete: true,
+            });
+          } catch (kickoffErr) {
+            console.warn('Could not send initial teacher kickoff greeting:', kickoffErr);
+          }
         } catch (connErr: unknown) {
           const errorMsg = connErr instanceof Error ? connErr.message : String(connErr);
           console.error('Failed to connect to Live API:', errorMsg);
@@ -556,6 +812,8 @@ wss.on('connection', (clientWs: WebSocket) => {
         }
       } else if (msg.type === 'send_text') {
         if (activeLiveSession && msg.text) {
+          teacherTurnCompleted = true;
+          studentTurnCompleted = true;
           activeLiveSession.sendClientContent({
             turns: [
               {
@@ -569,6 +827,10 @@ wss.on('connection', (clientWs: WebSocket) => {
       } else if (msg.type === 'update_target_class') {
         if (msg.targetClass) {
           currentTargetClass = msg.targetClass;
+        }
+      } else if (msg.type === 'update_system_prompt') {
+        if (msg.systemPrompt) {
+          console.log('Synchronized updated child preferences system prompt');
         }
       } else if (msg.type === 'update_max_output_tokens') {
         if (typeof msg.maxOutputTokens === 'number') {
