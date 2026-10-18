@@ -35,6 +35,12 @@ Do not use external images, external URLs, external fonts, JavaScript, or extern
 
 The SVG should have an appropriate viewBox and should scale correctly.
 
+Regional-language letter rendering rules:
+- For every non-Latin script letter (Tamil, Hindi, Kannada, Telugu, Malayalam, Bengali, etc.), you MUST render the letter as a Unicode character directly inside an SVG <text> element.
+- You are strictly prohibited from drawing, tracing, constructing, or approximating a regional-language letter using SVG paths, lines, curves, polygons, circles, or combinations of geometric shapes.
+- Example for Tamil 'அ': <text x="200" y="180" font-size="150" text-anchor="middle" font-family="Noto Sans Tamil, Latha, sans-serif" fill="black">அ</text>
+- English letters may use SVG paths when handwriting stroke instruction is required.
+
 Prioritize educational clarity over artistic beauty.`;
 
 export const CLASS_GUIDELINES: Record<string, string> = {

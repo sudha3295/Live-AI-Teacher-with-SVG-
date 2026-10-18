@@ -12,6 +12,7 @@ import {
   CLASS_GUIDELINES,
   extractAndSanitizeSvg,
 } from './src/server/svg-creator.ts';
+import { DEFAULT_TEACHER_PROMPT } from './src/utils/prompts.ts';
 
 dotenv.config();
 
@@ -185,7 +186,7 @@ wss.on('connection', (clientWs: WebSocket) => {
 
         const model = msg.model || 'gemini-3.8-live';
         const voice = msg.voice || 'Zephyr';
-        const systemPrompt = msg.systemPrompt || '';
+        const systemPrompt = msg.systemPrompt || DEFAULT_TEACHER_PROMPT;
         const prefixPaddingMs = typeof msg.prefixPaddingMs === 'number' ? msg.prefixPaddingMs : 300;
         const silenceDurationMs = typeof msg.silenceDurationMs === 'number' ? msg.silenceDurationMs : 500;
         currentTargetClass = msg.targetClass || 'Class 2';

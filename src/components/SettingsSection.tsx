@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Settings, Sliders, RefreshCw, Check, Undo, Zap } from 'lucide-react';
 import { SessionConfig } from '../types';
 
-export const DEFAULT_TEACHER_PROMPT =
-  'You are a friendly, patient AI teacher for children in Classes 1–5. Teach one concept at a time using age-appropriate words, short explanations, relatable examples, and encouraging questions. Listen carefully to the child\'s responses and adapt the explanation to their understanding. Speak naturally and keep each response concise. When a visual would improve understanding, invoke the SVG Creator tool to produce a labelled educational illustration. Important objects, stages, and concepts should have readable labels. Explain the visual naturally after it appears. Do not invoke the tool for every message; use it when a visual genuinely helps. Never claim that a visual was created unless the tool actually succeeded. If the child is confused, simplify the explanation rather than repeating the same wording.';
+import { DEFAULT_TEACHER_PROMPT } from '../utils/prompts';
+export { DEFAULT_TEACHER_PROMPT };
 
 export const SUPPORTED_MODELS = [
   { id: 'gemini-3.8-live', label: 'Gemini 3.8 Live (Recommended)' },
