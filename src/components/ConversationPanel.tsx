@@ -12,6 +12,10 @@ import {
   AlertCircle,
   Loader2,
   Image as ImageIcon,
+  BookmarkPlus,
+  BookOpen,
+  Brain,
+  Check,
 } from 'lucide-react';
 import { ChatMessage } from '../types';
 
@@ -26,6 +30,13 @@ interface ConversationPanelProps {
   onSendMessage: (text: string) => void;
   onClearSession: () => void;
   activeModelName: string;
+  onSaveCurrentSession?: () => void;
+  isSavingSession?: boolean;
+  onOpenParentPortal?: () => void;
+  resumeNotice?: string | null;
+  resumedFromTitle?: string | null;
+  savedSessionCount?: number;
+  onResetResumeMemory?: () => void;
 }
 
 export const ConversationPanel: React.FC<ConversationPanelProps> = ({
@@ -39,14 +50,21 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
   onSendMessage,
   onClearSession,
   activeModelName,
+  onSaveCurrentSession,
+  isSavingSession = false,
+  onOpenParentPortal,
+  resumeNotice,
+  resumedFromTitle,
+  savedSessionCount = 0,
+  onResetResumeMemory,
 }) => {
   const [inputText, setInputText] = useState('');
+  const [justSaved, setJustSaved] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (scrollContainerRef.current) {
-      // Direct scrollTop on the inner scroll container ensures newest message is always visible
       scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
     }
   }, [messages]);
@@ -56,6 +74,14 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
     if (!inputText.trim()) return;
     onSendMessage(inputText.trim());
     setInputText('');
+  };
+
+  const handleSave = () => {
+    if (onSaveCurrentSession) {
+      onSaveCurrentSession();
+      setJustSaved(true);
+      setTimeout(() => setJustSaved(false), 2500);
+    }
   };
 
   const getStatusBadge = () => {
@@ -96,18 +122,41 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       {/* Panel Header & Controls */}
       <div className="shrink-0 p-3.5 sm:p-4 border-b border-neutral-200 bg-neutral-50/80">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2">
-            <div className="p-1.5 bg-indigo-600 text-white rounded-md">
-              <GraduationCap className="h-4 w-4" />
+          <div className="flex items-center gap-2.5">
+            <div className="h-9 w-9 rounded-lg bg-indigo-600 text-white flex items-center justify-center shadow-2xs text-lg select-none">
+              🐘
             </div>
             <div>
-              <h2 className="text-sm font-bold text-neutral-900 leading-tight">
-                Teacher Conversation
-              </h2>
+              <div className="flex items-center gap-1.5">
+                <h2 className="text-sm font-bold text-neutral-900 leading-tight">
+                  Truncky AI
+                </h2>
+                <span className="text-[10px] font-semibold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 border border-amber-200">
+                  Kids Companion + Teacher AI
+                </span>
+              </div>
               <p className="text-[11px] text-neutral-500">{activeModelName}</p>
             </div>
           </div>
-          <div>{getStatusBadge()}</div>
+          <div className="flex items-center gap-2">
+            {onOpenParentPortal && (
+              <button
+                type="button"
+                onClick={onOpenParentPortal}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors cursor-pointer"
+                title="View what your child learned across sessions"
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                <span>Parent Timeline</span>
+                {savedSessionCount > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.2 bg-indigo-600 text-white rounded-full text-[10px]">
+                    {savedSessionCount}
+                  </span>
+                )}
+              </button>
+            )}
+            {getStatusBadge()}
+          </div>
         </div>
 
         {/* Action Controls Bar */}
@@ -183,6 +232,38 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
             )}
           </button>
 
+          {/* Save Lesson to Timeline Button */}
+          {messages.length > 0 && onSaveCurrentSession && (
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={isSavingSession}
+              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold rounded border transition-colors ${
+                justSaved
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'
+              }`}
+              title="Save this conversation to Parent Timeline & AI Memory"
+            >
+              {isSavingSession ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin text-indigo-600" />
+                  <span>Saving...</span>
+                </>
+              ) : justSaved ? (
+                <>
+                  <Check className="h-3 w-3 text-emerald-600" />
+                  <span>Saved!</span>
+                </>
+              ) : (
+                <>
+                  <BookmarkPlus className="h-3 w-3" />
+                  <span>Save Lesson</span>
+                </>
+              )}
+            </button>
+          )}
+
           {/* Clear Session */}
           <button
             type="button"
@@ -194,6 +275,29 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
             <span>Reset</span>
           </button>
         </div>
+
+        {/* AI Memory / Continuation Notice Banner */}
+        {resumedFromTitle && (
+          <div className="mt-2.5 pt-2 border-t border-neutral-200 flex items-center justify-between text-[11px] bg-purple-50/80 px-2.5 py-1.5 rounded border border-purple-200 text-purple-900">
+            <span className="flex items-center gap-1.5 truncate">
+              <Brain className="h-3.5 w-3.5 text-purple-600 shrink-0" />
+              <span>
+                <strong>AI Memory Active:</strong> Teacher remembers lesson on "
+                <span className="font-semibold">{resumedFromTitle}</span>" and will pick up where you left off.
+              </span>
+            </span>
+            {onResetResumeMemory && (
+              <button
+                type="button"
+                onClick={onResetResumeMemory}
+                className="ml-2 text-[10px] text-purple-700 underline hover:text-purple-900 shrink-0"
+                title="Start a fresh conversation without previous topic memory"
+              >
+                Start Fresh
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Transcript Area */}
@@ -203,15 +307,31 @@ export const ConversationPanel: React.FC<ConversationPanelProps> = ({
       >
         {messages.length === 0 ? (
           <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-center p-6 text-neutral-500">
-            <div className="p-3 bg-indigo-50 text-indigo-600 rounded-full mb-3">
-              <Sparkles className="h-6 w-6" />
+            <div className="p-3 bg-amber-50 text-amber-700 rounded-full mb-3 text-3xl select-none">
+              🐘
             </div>
-            <h3 className="text-sm font-semibold text-neutral-800">
-              Your AI Teacher is ready
+            <h3 className="text-base font-bold text-neutral-900">
+              Truncky is ready to learn and explore!
             </h3>
-            <p className="text-xs text-neutral-600 max-w-xs mt-1">
-              Click <strong>Start Live Lesson</strong> to connect. You can speak into your microphone or type a question below!
+            <p className="text-xs text-neutral-600 max-w-sm mt-1">
+              Your elephant companion is here. Click <strong>Start Live Lesson</strong> to speak with Truncky, ask questions, or discover new concepts together!
             </p>
+            {resumedFromTitle && (
+              <div className="mt-3 text-xs bg-purple-50 text-purple-900 px-3 py-1.5 rounded-full border border-purple-200 flex items-center gap-1.5">
+                <Brain className="h-3.5 w-3.5 text-purple-600" />
+                <span>Ready to pick up from: <strong>{resumedFromTitle}</strong></span>
+              </div>
+            )}
+            {onOpenParentPortal && savedSessionCount > 0 && (
+              <button
+                type="button"
+                onClick={onOpenParentPortal}
+                className="mt-4 text-xs font-semibold text-indigo-600 hover:text-indigo-800 hover:underline flex items-center gap-1"
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                <span>View {savedSessionCount} past lesson timeline records</span>
+              </button>
+            )}
           </div>
         ) : (
           messages.map((msg) => {

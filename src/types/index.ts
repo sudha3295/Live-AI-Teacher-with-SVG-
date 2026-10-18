@@ -58,3 +58,40 @@ export interface SessionConfig {
   silenceDurationMs: number;
   maxOutputTokens: number;
 }
+
+export interface TimelineMilestone {
+  id: string;
+  timestamp: number;
+  type: 'concept' | 'visual' | 'question' | 'milestone';
+  title: string;
+  description: string;
+  svgMarkup?: string;
+  childQuestion?: string;
+  teacherHighlight?: string;
+}
+
+export interface SessionVisual {
+  callId: string;
+  topic: string;
+  targetClass?: string;
+  description?: string;
+  svgMarkup: string;
+  timestamp: number;
+}
+
+export interface LearningSession {
+  id: string;
+  startedAt: number;
+  endedAt: number;
+  durationSeconds: number;
+  targetClass: string;
+  title: string;
+  summary: string;
+  keyLearnings: string[];
+  skillsCovered: string[];
+  timeline: TimelineMilestone[];
+  transcript: ChatMessage[];
+  visuals: SessionVisual[];
+  resumeContext: string;
+  tokensUsed?: number;
+}

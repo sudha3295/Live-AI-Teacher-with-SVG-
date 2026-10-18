@@ -1,0 +1,132 @@
+[
+  {
+    "id": "seed-session-1",
+    "startedAt": 1792153411798,
+    "endedAt": 1792154251798,
+    "durationSeconds": 840,
+    "targetClass": "Class 2",
+    "title": "Parts of a Plant & Why Leaves Are Green",
+    "summary": "The child learned the 4 basic parts of a plant (roots, stem, leaves, flower) with a visual diagram, and discovered how chlorophyll acts like a little green kitchen that absorbs sunlight.",
+    "keyLearnings": [
+      "Roots absorb water and nutrients from the soil like tiny sponges.",
+      "The stem acts like an elevator that carries water up to the leaves.",
+      "Leaves make food for the plant using sunlight and chlorophyll.",
+      "Flowers help the plant make seeds to grow new plants."
+    ],
+    "skillsCovered": [
+      "Botanical Science",
+      "Diagram Reading",
+      "Scientific Vocabulary"
+    ],
+    "timeline": [
+      {
+        "id": "m1",
+        "timestamp": 1792153531798,
+        "type": "concept",
+        "title": "Explored Root & Stem Functions",
+        "description": "Understood how roots anchor the plant and drink water from the soil."
+      },
+      {
+        "id": "m2",
+        "timestamp": 1792153711798,
+        "type": "visual",
+        "title": "Examined Labelled Plant Diagram",
+        "description": "Visual diagram created showing flower, leaf, stem, and roots."
+      },
+      {
+        "id": "m3",
+        "timestamp": 1792153951798,
+        "type": "question",
+        "title": "Curious Question: \"Why are leaves green?\"",
+        "description": "Child wondered why leaves are green instead of blue or red.",
+        "childQuestion": "Why are leaves green and not blue?",
+        "teacherHighlight": "Explained chlorophyll as nature’s green solar panel."
+      },
+      {
+        "id": "m4",
+        "timestamp": 1792154191798,
+        "type": "milestone",
+        "title": "Concept Check Passed",
+        "description": "Child correctly identified all 4 parts when quizzed gently."
+      }
+    ],
+    "transcript": [
+      {
+        "id": "s1",
+        "role": "student",
+        "text": "Teacher, can you teach me about plants?",
+        "timestamp": 1792153471798
+      },
+      {
+        "id": "s2",
+        "role": "teacher",
+        "text": "Hello! I would love to! Plants are amazing living things. Let us look at the four important parts of a plant: roots, stem, leaves, and flower.",
+        "timestamp": 1792153531798
+      }
+    ],
+    "visuals": [],
+    "resumeContext": "In the previous lesson on Plants (Class 2), the child learned all 4 basic parts of a plant (roots, stem, leaves, flower) and learned about chlorophyll making leaves green. The child was curious about how plants drink water. Next topic recommended: How seeds germinate, or how rain helps plants grow.",
+    "tokensUsed": 1420
+  },
+  {
+    "id": "seed-session-2",
+    "startedAt": 1792239811798,
+    "endedAt": 1792240471798,
+    "durationSeconds": 660,
+    "targetClass": "Class 2",
+    "title": "Introduction to Tamil Vowels: Letter \"அ\" (Ah)",
+    "summary": "Practiced the first Tamil uyir ezhuthu \"அ\" (Ah). The child learned its sound, pronunciation, and connected it with the word \"அம்மா\" (Amma).",
+    "keyLearnings": [
+      "Recognized the first Tamil vowel letter \"அ\" (Ah).",
+      "Understood that \"அ\" is the opening letter of the Tamil alphabet.",
+      "Practiced saying \"அ\" clearly with words like \"அம்மா\" (Amma / Mother) and \"அனில்\" (Anil / Squirrel)."
+    ],
+    "skillsCovered": [
+      "Tamil Language",
+      "Letter Phonetics",
+      "Vocabulary Association"
+    ],
+    "timeline": [
+      {
+        "id": "m2-1",
+        "timestamp": 1792239931798,
+        "type": "concept",
+        "title": "Sound of \"அ\" (Ah)",
+        "description": "Practiced open-mouth sound \"Ah\" like singing."
+      },
+      {
+        "id": "m2-2",
+        "timestamp": 1792240111798,
+        "type": "visual",
+        "title": "Tamil Letter \"அ\" Card Displayed",
+        "description": "Rendered Unicode character \"அ\" with clear pronunciation label."
+      },
+      {
+        "id": "m2-3",
+        "timestamp": 1792240291798,
+        "type": "question",
+        "title": "Word Association: \"அம்மா\"",
+        "description": "Child proudly connected \"அ\" to \"அம்மா\" (Mother).",
+        "childQuestion": "Is அ the first letter in Amma?",
+        "teacherHighlight": "Confirmed enthusiastically and praised child."
+      }
+    ],
+    "transcript": [
+      {
+        "id": "t1",
+        "role": "student",
+        "text": "Can you teach me the first Tamil letter?",
+        "timestamp": 1792239871798
+      },
+      {
+        "id": "t2",
+        "role": "teacher",
+        "text": "Vanakkam! The very first letter in Tamil is \"அ\" (Ah). It is a beautiful vowel. Say it with me: \"அ\" as in \"அம்மா\" (Amma)!",
+        "timestamp": 1792239931798
+      }
+    ],
+    "visuals": [],
+    "resumeContext": "In the previous lesson on Tamil (Class 2), the child successfully learned the first vowel letter \"அ\" (Ah) and word \"அம்மா\". The next logical step is learning the second vowel letter \"ஆ\" (Aah) as in \"ஆடு\" (Aadu / Goat) or \"ஆலமரம்\" (Banyan tree), and comparing the short vs long vowel sounds.",
+    "tokensUsed": 1180
+  }
+]

@@ -13,6 +13,15 @@ import {
   extractAndSanitizeSvg,
 } from './src/server/svg-creator.ts';
 import { DEFAULT_TEACHER_PROMPT } from './src/utils/prompts.ts';
+import {
+  getAllSessions,
+  getSessionById,
+  saveOrUpdateSession,
+  deleteSession,
+  getLatestResumeContext,
+  summarizeSessionWithAI,
+} from './src/server/session-storage.ts';
+import { LearningSession } from './src/types/index.ts';
 
 dotenv.config();
 
@@ -136,6 +145,93 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Learning Sessions & Parent Timeline Endpoints
+app.get('/api/sessions', (req, res) => {
+  try {
+    const sessions = getAllSessions();
+    res.json({ sessions });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get('/api/sessions/:id', (req, res) => {
+  try {
+    const session = getSessionById(req.params.id);
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    res.json({ session });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post('/api/sessions', (req, res) => {
+  try {
+    const sessionData = req.body;
+    if (!sessionData || !sessionData.id) {
+      return res.status(400).json({ error: 'Missing session data or id' });
+    }
+    const saved = saveOrUpdateSession(sessionData);
+    res.json({ session: saved });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post('/api/sessions/summarize-and-save', async (req, res) => {
+  try {
+    const { id, startedAt, endedAt, durationSeconds, targetClass, transcript, visuals, tokensUsed } =
+      req.body;
+    const aiSummary = await summarizeSessionWithAI(svgAi, {
+      targetClass: targetClass || 'Class 2',
+      transcript: transcript || [],
+      visuals: visuals || [],
+    });
+
+    const fullSession: LearningSession = {
+      id: id || `session-${Date.now()}`,
+      startedAt: startedAt || Date.now() - (durationSeconds || 60) * 1000,
+      endedAt: endedAt || Date.now(),
+      durationSeconds: durationSeconds || 60,
+      targetClass: targetClass || 'Class 2',
+      title: aiSummary.title,
+      summary: aiSummary.summary,
+      keyLearnings: aiSummary.keyLearnings,
+      skillsCovered: aiSummary.skillsCovered,
+      timeline: aiSummary.timeline,
+      transcript: transcript || [],
+      visuals: visuals || [],
+      resumeContext: aiSummary.resumeContext,
+      tokensUsed: tokensUsed || 0,
+    };
+
+    saveOrUpdateSession(fullSession);
+    res.json({ session: fullSession });
+  } catch (err) {
+    console.error('Error in summarize-and-save:', err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.delete('/api/sessions/:id', (req, res) => {
+  try {
+    const deleted = deleteSession(req.params.id);
+    res.json({ success: deleted });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.get('/api/resume-context', (req, res) => {
+  try {
+    const targetClass = typeof req.query.targetClass === 'string' ? req.query.targetClass : undefined;
+    const context = getLatestResumeContext(targetClass);
+    res.json(context);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // Live WebSocket connections
 wss.on('connection', (clientWs: WebSocket) => {
   let activeLiveSession: any = null;
@@ -186,11 +282,32 @@ wss.on('connection', (clientWs: WebSocket) => {
 
         const model = msg.model || 'gemini-3.8-live';
         const voice = msg.voice || 'Zephyr';
-        const systemPrompt = msg.systemPrompt || DEFAULT_TEACHER_PROMPT;
+        const baseSystemPrompt = msg.systemPrompt || DEFAULT_TEACHER_PROMPT;
         const prefixPaddingMs = typeof msg.prefixPaddingMs === 'number' ? msg.prefixPaddingMs : 300;
         const silenceDurationMs = typeof msg.silenceDurationMs === 'number' ? msg.silenceDurationMs : 500;
         currentTargetClass = msg.targetClass || 'Class 2';
         currentMaxOutputTokens = typeof msg.maxOutputTokens === 'number' ? msg.maxOutputTokens : 8192;
+
+        // Check if resuming from previous learning history
+        let finalSystemPrompt = baseSystemPrompt;
+        let resumeNotice: string | null = null;
+        let resumedFromSessionTitle: string | null = null;
+
+        if (msg.resumeContext) {
+          finalSystemPrompt = `${baseSystemPrompt}\n\n${msg.resumeContext}`;
+          resumeNotice = 'Custom session context active';
+          resumedFromSessionTitle = msg.resumedTitle || 'Selected Session';
+        } else if (msg.useResumeMemory !== false) {
+          const { hasHistory, resumeInstructionText, latestSession } =
+            getLatestResumeContext(currentTargetClass);
+          if (hasHistory && resumeInstructionText) {
+            finalSystemPrompt = `${baseSystemPrompt}\n\n${resumeInstructionText}`;
+            resumeNotice = latestSession
+              ? `Resuming from: "${latestSession.title}"`
+              : 'Previous learning memory active';
+            resumedFromSessionTitle = latestSession?.title || null;
+          }
+        }
 
         sendToClient({
           type: 'session_status',
@@ -202,7 +319,9 @@ wss.on('connection', (clientWs: WebSocket) => {
             prefixPaddingMs,
             silenceDurationMs,
             maxOutputTokens: currentMaxOutputTokens,
-            systemPromptLength: systemPrompt.length,
+            systemPromptLength: finalSystemPrompt.length,
+            resumeNotice,
+            resumedFromSessionTitle,
           },
         });
 
@@ -216,7 +335,7 @@ wss.on('connection', (clientWs: WebSocket) => {
                   prebuiltVoiceConfig: { voiceName: voice },
                 },
               },
-              systemInstruction: systemPrompt,
+              systemInstruction: finalSystemPrompt,
               realtimeInputConfig: {
                 automaticActivityDetection: {
                   prefixPaddingMs,

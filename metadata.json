@@ -1,6 +1,6 @@
 {
   "name": "AI Teacher - Live Voice & SVG Visual Teaching",
-  "description": "Interactive AI teacher for Classes 1–5 combining Gemini Live voice conversation with real-time SVG visual educational diagrams.",
+  "description": "Interactive AI teacher for Classes 1–5 combining Gemini Live voice conversation, real-time SVG visual diagrams, parent learning timeline & session continuity memory.",
   "requestFramePermissions": [
     "microphone"
   ],
